@@ -65,11 +65,15 @@ let _isRootless: boolean | null = null;
 export function isRootlessRuntime(): boolean {
   if (_isRootless !== null) return _isRootless;
   try {
-    const info = execFileSync(CONTAINER_RUNTIME_BIN, ['info', '--format', '{{.SecurityOptions}}'], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      encoding: 'utf-8',
-      timeout: 5000,
-    });
+    const info = execFileSync(
+      CONTAINER_RUNTIME_BIN,
+      ['info', '--format', '{{.SecurityOptions}}'],
+      {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        encoding: 'utf-8',
+        timeout: 5000,
+      },
+    );
     _isRootless = info.includes('rootless');
   } catch {
     _isRootless = false;

@@ -66,8 +66,14 @@ let messageLoopRunning = false;
 
 const channels: Channel[] = [];
 const queue = new GroupQueue();
-const groupLimiter = new RateLimiter(RATE_LIMIT_GROUP_MAX, RATE_LIMIT_WINDOW_MS);
-const senderLimiter = new RateLimiter(RATE_LIMIT_SENDER_MAX, RATE_LIMIT_WINDOW_MS);
+const groupLimiter = new RateLimiter(
+  RATE_LIMIT_GROUP_MAX,
+  RATE_LIMIT_WINDOW_MS,
+);
+const senderLimiter = new RateLimiter(
+  RATE_LIMIT_SENDER_MAX,
+  RATE_LIMIT_WINDOW_MS,
+);
 
 function loadState(): void {
   lastTimestamp = getRouterState('last_timestamp') || '';
