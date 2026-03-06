@@ -245,10 +245,35 @@ server.tool(
 );
 
 server.tool(
+  'list_groups',
+  'List all available chat groups/channels that can be registered. Shows JID, name, channel, and registration status.',
+  {},
+  async () => {
+    const groupsFile = path.join(IPC_DIR, 'available_groups.json');
+    try {
+      const data = JSON.parse(fs.readFileSync(groupsFile, 'utf-8'));
+      const groups = data.groups || [];
+      if (groups.length === 0) {
+        return { content: [{ type: 'text' as const, text: 'No groups available.' }] };
+      }
+      const lines = groups.map((g: { jid: string; name: string; lastActivity: string; isRegistered: boolean }) =>
+        `- ${g.name} (${g.jid}) ${g.isRegistered ? '[REGISTERED]' : '[not registered]'} — last activity: ${g.lastActivity}`
+      );
+      return { content: [{ type: 'text' as const, text: `Available groups:\n${lines.join('\n')}` }] };
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: `Failed to read available groups: ${err instanceof Error ? err.message : String(err)}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
   'register_group',
   `Register a new chat/group so the agent can respond to messages there. Main group only.
 
-Use available_groups.json to find the JID for a group. The folder name must be channel-prefixed: "{channel}_{group-name}" (e.g., "whatsapp_family-chat", "telegram_dev-team", "discord_general"). Use lowercase with hyphens for the group name part.`,
+Use the list_groups tool to find available groups and their JIDs. The folder name must be channel-prefixed: "{channel}_{group-name}" (e.g., "whatsapp_family-chat", "telegram_dev-team", "line_sakaki-labs", "discord_general"). Use lowercase with hyphens for the group name part.`,
   {
     jid: z.string().describe('The chat JID (e.g., "120363336345536173@g.us", "tg:-1001234567890", "dc:1234567890123456")'),
     name: z.string().describe('Display name for the group'),

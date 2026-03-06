@@ -5,8 +5,12 @@
 
 // gmail
 
+// line
+import './line.js';
+
 // slack
 
 // telegram
 
 // whatsapp
+import './whatsapp.js';
