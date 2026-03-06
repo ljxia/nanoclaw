@@ -432,7 +432,8 @@ async function runQuery(
         'TeamCreate', 'TeamDelete', 'SendMessage',
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
-        'mcp__nanoclaw__*'
+        'mcp__nanoclaw__*',
+        'mcp__llama_swap__*'
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -447,6 +448,10 @@ async function runQuery(
             NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
           },
+        },
+        'llama-swap': {
+          command: 'node',
+          args: [path.join(path.dirname(mcpServerPath), 'llama-swap-mcp-stdio.js')],
         },
       },
       hooks: {
@@ -537,11 +542,28 @@ async function main(): Promise<void> {
 
   // Query loop: run query → wait for IPC message → run new query → repeat
   let resumeAt: string | undefined;
+  let isFirstQuery = true;
   try {
     while (true) {
       log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
 
-      const queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt);
+      let queryResult: { newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean };
+      try {
+        queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt);
+      } catch (err) {
+        // If resuming a session fails on the first query, the session data is
+        // likely missing from disk. Retry without a session ID to start fresh.
+        if (isFirstQuery && sessionId) {
+          const msg = err instanceof Error ? err.message : String(err);
+          log(`Session resume failed (${msg}), retrying without session ID`);
+          sessionId = undefined;
+          resumeAt = undefined;
+          queryResult = await runQuery(prompt, undefined, mcpServerPath, containerInput, sdkEnv);
+        } else {
+          throw err;
+        }
+      }
+      isFirstQuery = false;
       if (queryResult.newSessionId) {
         sessionId = queryResult.newSessionId;
       }

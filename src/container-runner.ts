@@ -2,7 +2,7 @@
  * Container Runner for NanoClaw
  * Spawns agent execution in containers and handles IPC
  */
-import { ChildProcess, exec, spawn } from 'child_process';
+import { ChildProcess, execFile, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -20,8 +20,8 @@ import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import {
   CONTAINER_RUNTIME_BIN,
+  isRootlessRuntime,
   readonlyMountArgs,
-  stopContainer,
 } from './container-runtime.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
@@ -52,6 +52,36 @@ interface VolumeMount {
   hostPath: string;
   containerPath: string;
   readonly: boolean;
+}
+
+/**
+ * In rootless Docker, the host UID maps to root inside the container.
+ * The container's non-root user (node, UID 1000) can't write to host-owned
+ * bind-mounted directories. Recursively make them world-writable so the
+ * container can create files (debug logs, sessions, etc.).
+ */
+function ensureContainerWritable(dir: string): void {
+  if (!isRootlessRuntime()) return;
+  try {
+    const fixPerms = (d: string) => {
+      fs.chmodSync(d, 0o777);
+      for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
+        const entryPath = path.join(d, entry.name);
+        if (entry.isDirectory()) {
+          fixPerms(entryPath);
+        } else {
+          try {
+            fs.chmodSync(entryPath, 0o666);
+          } catch {
+            /* skip unowned */
+          }
+        }
+      }
+    };
+    fixPerms(dir);
+  } catch (err) {
+    logger.debug({ dir, err }, 'Failed to set container-writable permissions');
+  }
 }
 
 function buildVolumeMounts(
@@ -120,6 +150,8 @@ function buildVolumeMounts(
     '.claude',
   );
   fs.mkdirSync(groupSessionsDir, { recursive: true });
+  // Claude Agent SDK writes debug logs here; ensure it exists
+  fs.mkdirSync(path.join(groupSessionsDir, 'debug'), { recursive: true });
   const settingsFile = path.join(groupSessionsDir, 'settings.json');
   if (!fs.existsSync(settingsFile)) {
     fs.writeFileSync(
@@ -155,6 +187,8 @@ function buildVolumeMounts(
       fs.cpSync(srcDir, dstDir, { recursive: true });
     }
   }
+  // Rootless Docker: container's node user can't write host-owned files
+  ensureContainerWritable(groupSessionsDir);
   mounts.push({
     hostPath: groupSessionsDir,
     containerPath: '/home/node/.claude',
@@ -167,6 +201,7 @@ function buildVolumeMounts(
   fs.mkdirSync(path.join(groupIpcDir, 'messages'), { recursive: true });
   fs.mkdirSync(path.join(groupIpcDir, 'tasks'), { recursive: true });
   fs.mkdirSync(path.join(groupIpcDir, 'input'), { recursive: true });
+  ensureContainerWritable(groupIpcDir);
   mounts.push({
     hostPath: groupIpcDir,
     containerPath: '/workspace/ipc',
@@ -191,6 +226,7 @@ function buildVolumeMounts(
   if (!fs.existsSync(groupAgentRunnerDir) && fs.existsSync(agentRunnerSrc)) {
     fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
   }
+  ensureContainerWritable(groupAgentRunnerDir);
   mounts.push({
     hostPath: groupAgentRunnerDir,
     containerPath: '/app/src',
@@ -265,6 +301,7 @@ export async function runContainerAgent(
 
   const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(groupDir, { recursive: true });
+  ensureContainerWritable(groupDir);
 
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
@@ -377,7 +414,12 @@ export async function runContainerAgent(
       const chunk = data.toString();
       const lines = chunk.trim().split('\n');
       for (const line of lines) {
-        if (line) logger.debug({ container: group.folder }, line);
+        if (!line) continue;
+        if (line.includes('[LLAMA-SWAP]')) {
+          logger.info({ container: group.folder }, line);
+        } else {
+          logger.debug({ container: group.folder }, line);
+        }
       }
       // Don't reset timeout on stderr — SDK writes debug logs continuously.
       // Timeout only resets on actual output (OUTPUT_MARKER in stdout).
@@ -408,15 +450,20 @@ export async function runContainerAgent(
         { group: group.name, containerName },
         'Container timeout, stopping gracefully',
       );
-      exec(stopContainer(containerName), { timeout: 15000 }, (err) => {
-        if (err) {
-          logger.warn(
-            { group: group.name, containerName, err },
-            'Graceful stop failed, force killing',
-          );
-          container.kill('SIGKILL');
-        }
-      });
+      execFile(
+        CONTAINER_RUNTIME_BIN,
+        ['stop', containerName],
+        { timeout: 15000 },
+        (err) => {
+          if (err) {
+            logger.warn(
+              { group: group.name, containerName, err },
+              'Graceful stop failed, force killing',
+            );
+            container.kill('SIGKILL');
+          }
+        },
+      );
     };
 
     let timeout = setTimeout(killOnTimeout, timeoutMs);
