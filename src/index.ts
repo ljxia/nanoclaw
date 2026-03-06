@@ -5,6 +5,9 @@ import {
   ASSISTANT_NAME,
   IDLE_TIMEOUT,
   POLL_INTERVAL,
+  RATE_LIMIT_GROUP_MAX,
+  RATE_LIMIT_SENDER_MAX,
+  RATE_LIMIT_WINDOW_MS,
   TRIGGER_PATTERN,
 } from './config.js';
 import './channels/index.js';
@@ -50,6 +53,7 @@ import {
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
+import { RateLimiter } from './rate-limiter.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -62,6 +66,8 @@ let messageLoopRunning = false;
 
 const channels: Channel[] = [];
 const queue = new GroupQueue();
+const groupLimiter = new RateLimiter(RATE_LIMIT_GROUP_MAX, RATE_LIMIT_WINDOW_MS);
+const senderLimiter = new RateLimiter(RATE_LIMIT_SENDER_MAX, RATE_LIMIT_WINDOW_MS);
 
 function loadState(): void {
   lastTimestamp = getRouterState('last_timestamp') || '';
@@ -397,6 +403,32 @@ async function startMessageLoop(): Promise<void> {
                   isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
             );
             if (!hasTrigger) continue;
+          }
+
+          // Rate limit: per-group
+          if (!groupLimiter.check(chatJid)) {
+            logger.warn(
+              { chatJid, group: group.name },
+              'Rate limited (group), skipping until next window',
+            );
+            continue;
+          }
+
+          // Rate limit: per-sender for non-main groups
+          if (!isMainGroup) {
+            const triggerSender = groupMessages.find((m) =>
+              TRIGGER_PATTERN.test(m.content.trim()),
+            )?.sender;
+            if (
+              triggerSender &&
+              !senderLimiter.check(`${chatJid}:${triggerSender}`)
+            ) {
+              logger.warn(
+                { chatJid, sender: triggerSender, group: group.name },
+                'Rate limited (sender), skipping until next window',
+              );
+              continue;
+            }
           }
 
           // Pull all messages since lastAgentTimestamp so non-trigger

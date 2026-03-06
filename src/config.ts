@@ -63,6 +63,17 @@ export const TRIGGER_PATTERN = new RegExp(
   'i',
 );
 
+// Rate limiting: max agent invocations per group/sender per window
+export const RATE_LIMIT_GROUP_MAX = parseInt(
+  process.env.RATE_LIMIT_GROUP_MAX || '5',
+  10,
+);
+export const RATE_LIMIT_SENDER_MAX = parseInt(
+  process.env.RATE_LIMIT_SENDER_MAX || '3',
+  10,
+);
+export const RATE_LIMIT_WINDOW_MS = 60000;
+
 // Timezone for scheduled tasks (cron expressions, etc.)
 // Uses system timezone by default
 export const TIMEZONE =
