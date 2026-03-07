@@ -5,10 +5,6 @@ import {
   ASSISTANT_NAME,
   IDLE_TIMEOUT,
   POLL_INTERVAL,
-  RATE_LIMIT_GROUP_MAX,
-  RATE_LIMIT_SENDER_MAX,
-  RATE_LIMIT_WINDOW_MS,
-  TIMEZONE,
   TRIGGER_PATTERN,
 } from './config.js';
 import './channels/index.js';
@@ -33,7 +29,6 @@ import {
   getAllTasks,
   getMessagesSince,
   getNewMessages,
-  getRegisteredGroup,
   getRouterState,
   initDatabase,
   setRegisteredGroup,
@@ -54,8 +49,8 @@ import {
 } from './sender-allowlist.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
+import { parseImageReferences } from './image.js';
 import { logger } from './logger.js';
-import { RateLimiter } from './rate-limiter.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -68,14 +63,6 @@ let messageLoopRunning = false;
 
 const channels: Channel[] = [];
 const queue = new GroupQueue();
-const groupLimiter = new RateLimiter(
-  RATE_LIMIT_GROUP_MAX,
-  RATE_LIMIT_WINDOW_MS,
-);
-const senderLimiter = new RateLimiter(
-  RATE_LIMIT_SENDER_MAX,
-  RATE_LIMIT_WINDOW_MS,
-);
 
 function loadState(): void {
   lastTimestamp = getRouterState('last_timestamp') || '';
@@ -184,7 +171,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     if (!hasTrigger) return true;
   }
 
-  const prompt = formatMessages(missedMessages, TIMEZONE);
+  const prompt = formatMessages(missedMessages);
+  const imageAttachments = parseImageReferences(missedMessages);
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
@@ -216,7 +204,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let hadError = false;
   let outputSentToUser = false;
 
-  const output = await runAgent(group, prompt, chatJid, async (result) => {
+  const output = await runAgent(group, prompt, chatJid, imageAttachments, async (result) => {
     // Streaming output callback — called for each agent result
     if (result.result) {
       const raw =
@@ -273,6 +261,7 @@ async function runAgent(
   group: RegisteredGroup,
   prompt: string,
   chatJid: string,
+  imageAttachments: Array<{ relativePath: string; mediaType: string }>,
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
@@ -324,6 +313,7 @@ async function runAgent(
         chatJid,
         isMain,
         assistantName: ASSISTANT_NAME,
+        ...(imageAttachments.length > 0 && { imageAttachments }),
       },
       (proc, containerName) =>
         queue.registerProcess(chatJid, proc, containerName, group.folder),
@@ -413,32 +403,6 @@ async function startMessageLoop(): Promise<void> {
             if (!hasTrigger) continue;
           }
 
-          // Rate limit: per-group
-          if (!groupLimiter.check(chatJid)) {
-            logger.warn(
-              { chatJid, group: group.name },
-              'Rate limited (group), skipping until next window',
-            );
-            continue;
-          }
-
-          // Rate limit: per-sender for non-main groups
-          if (!isMainGroup) {
-            const triggerSender = groupMessages.find((m) =>
-              TRIGGER_PATTERN.test(m.content.trim()),
-            )?.sender;
-            if (
-              triggerSender &&
-              !senderLimiter.check(`${chatJid}:${triggerSender}`)
-            ) {
-              logger.warn(
-                { chatJid, sender: triggerSender, group: group.name },
-                'Rate limited (sender), skipping until next window',
-              );
-              continue;
-            }
-          }
-
           // Pull all messages since lastAgentTimestamp so non-trigger
           // context that accumulated between triggers is included.
           const allPending = getMessagesSince(
@@ -448,7 +412,7 @@ async function startMessageLoop(): Promise<void> {
           );
           const messagesToSend =
             allPending.length > 0 ? allPending : groupMessages;
-          const formatted = formatMessages(messagesToSend, TIMEZONE);
+          const formatted = formatMessages(messagesToSend);
 
           if (queue.sendMessage(chatJid, formatted)) {
             logger.debug(
