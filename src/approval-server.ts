@@ -489,7 +489,8 @@ async function handleStop(
   const summary = (input.last_assistant_message as string) || '';
   const sessionId = (input.session_id as string) || '';
 
-  const truncated = summary.length > 1500 ? summary.slice(0, 1500) + '…' : summary;
+  const truncated =
+    summary.length > 1500 ? summary.slice(0, 1500) + '…' : summary;
   const msg = (await sendToChannel(
     `⏸️ **${shortCwd}** wants to stop\n${truncated}\n\nReact ${CONTINUE_EMOJI} to continue or ${STOP_EMOJI} to let it stop. Or reply with instructions.`,
     true,
@@ -512,10 +513,7 @@ async function handleStop(
       resolve({ decision: 'allow' });
     }, TIMEOUT_MS);
 
-    const wrappedResolve = (result: {
-      decision: string;
-      text?: string;
-    }) => {
+    const wrappedResolve = (result: { decision: string; text?: string }) => {
       clearTimeout(timeout);
       if (result.decision === 'allow') {
         // Stopping — record session for resume via reply
@@ -537,7 +535,8 @@ async function handleStop(
         // Continue emoji — block stop with generic reason
         resolve({
           decision: 'block',
-          reason: 'User chose to continue via Discord. Ask the user what they would like to do next using AskUserQuestion.',
+          reason:
+            'User chose to continue via Discord. Ask the user what they would like to do next using AskUserQuestion.',
         });
       }
     };
