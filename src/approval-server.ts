@@ -24,8 +24,11 @@ const TIMEOUT_MS = parseInt(process.env.APPROVAL_TIMEOUT || '600000', 10);
 const APPROVE_EMOJI = '👍';
 const DENY_EMOJI = '👎';
 const ALWAYS_EMOJI = '🤘';
+const SESSION_EMOJI = '⏩';
 const CONTINUE_EMOJI = '▶️';
 const STOP_EMOJI = '⏹️';
+
+const SESSION_APPROVE_DURATION_MS = 5 * 60 * 1000; // 5 minutes
 
 // Read bot token from .env
 const envVars = readEnvFile(['DISCORD_BOT_TOKEN']);
@@ -75,6 +78,9 @@ interface PendingRequest {
 
 // Track pending approval requests by Discord message ID
 const pendingApprovals = new Map<string, PendingRequest>();
+
+// Track session-level auto-approvals (session ID -> expiry timestamp)
+const sessionAutoApprovals = new Map<string, number>();
 
 // Track pending text replies (for AskUserQuestion)
 const pendingQuestions = new Map<string, PendingRequest>();
@@ -210,6 +216,20 @@ client.on(Events.MessageReactionAdd, (reaction, user) => {
       pendingApprovals.delete(msgId);
       ack(pending.msg, ACK_ALLOW);
       pending.resolve({ decision: 'allow', always: true });
+    } else if (emoji === SESSION_EMOJI) {
+      pendingApprovals.delete(msgId);
+      ack(pending.msg, ACK_ALLOW);
+      // Auto-approve this session for 5 minutes
+      const sessionId = (pending.input?.session_id as string) || '';
+      if (sessionId) {
+        const expiry = Date.now() + SESSION_APPROVE_DURATION_MS;
+        sessionAutoApprovals.set(sessionId, expiry);
+        const mins = SESSION_APPROVE_DURATION_MS / 60000;
+        sendToChannel(
+          `⏩ Auto-approving session \`${sessionId.slice(0, 8)}…\` for ${mins} minutes`,
+        );
+      }
+      pending.resolve({ decision: 'allow' });
     }
     return;
   }
@@ -427,6 +447,16 @@ async function handleApproval(
     return { decision: 'allow' };
   }
 
+  // Auto-approve if session has a temporary blanket approval
+  const sessionId = (input.session_id as string) || '';
+  if (sessionId && sessionAutoApprovals.has(sessionId)) {
+    const expiry = sessionAutoApprovals.get(sessionId)!;
+    if (Date.now() < expiry) {
+      return { decision: 'allow' };
+    }
+    sessionAutoApprovals.delete(sessionId);
+  }
+
   if (!channel) throw new Error('Discord channel not ready');
 
   const toolName = (input.tool_name as string) || '';
@@ -445,6 +475,7 @@ async function handleApproval(
     await msg.react(APPROVE_EMOJI);
     await msg.react(DENY_EMOJI);
     await msg.react(ALWAYS_EMOJI);
+    await msg.react(SESSION_EMOJI);
   }
 
   return new Promise((resolve) => {
@@ -674,6 +705,12 @@ const server = http.createServer((req, res) => {
         pending: pendingApprovals.size,
         questions: pendingQuestions.size,
         stops: pendingStops.size,
+        sessionAutoApprovals: Object.fromEntries(
+          [...sessionAutoApprovals].map(([id, exp]) => [
+            id.slice(0, 8),
+            Math.max(0, Math.round((exp - Date.now()) / 1000)),
+          ]),
+        ),
       }),
     );
   } else {
