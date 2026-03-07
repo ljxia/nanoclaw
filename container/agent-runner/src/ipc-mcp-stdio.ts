@@ -305,6 +305,23 @@ Use the list_groups tool to find available groups and their JIDs. The folder nam
   },
 );
 
+server.tool(
+  'restart_service',
+  'Restart a docker-compose service on the host after code changes. Only works for services configured in the group.',
+  { service: z.string().describe('Service name (e.g. "rolypoly")') },
+  async (args) => {
+    writeIpcFile(TASKS_DIR, {
+      type: 'restart_service',
+      service: args.service,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    });
+    return {
+      content: [{ type: 'text' as const, text: `Restart requested for ${args.service}. Check logs for result.` }],
+    };
+  },
+);
+
 // Start the stdio transport
 const transport = new StdioServerTransport();
 await server.connect(transport);

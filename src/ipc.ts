@@ -1,9 +1,16 @@
+import { exec } from 'child_process';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 import { CronExpressionParser } from 'cron-parser';
 
-import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
+import {
+  DATA_DIR,
+  IPC_POLL_INTERVAL,
+  SERVICES_CONFIG_PATH,
+  TIMEZONE,
+} from './config.js';
 import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
@@ -164,6 +171,8 @@ export async function processTaskIpc(
     groupFolder?: string;
     chatJid?: string;
     targetJid?: string;
+    // For restart_service
+    service?: string;
     // For register_group
     jid?: string;
     name?: string;
@@ -383,7 +392,89 @@ export async function processTaskIpc(
       }
       break;
 
+    case 'restart_service': {
+      const service = data.service as string | undefined;
+      if (!service) {
+        logger.warn({ sourceGroup }, 'restart_service missing service name');
+        break;
+      }
+      const services = loadServiceRegistry();
+      const svc = services[service];
+      if (!svc) {
+        logger.warn(
+          { service, sourceGroup },
+          'Unknown service in restart request',
+        );
+        // Send feedback to the group
+        const chatJid = findChatJidByFolder(sourceGroup, registeredGroups);
+        if (chatJid) {
+          await deps.sendMessage(
+            chatJid,
+            `Unknown service "${service}". Available: ${Object.keys(services).join(', ') || 'none'}`,
+          );
+        }
+        break;
+      }
+      const dir = expandHomePath(svc.directory);
+      logger.info(
+        { service, directory: dir, sourceGroup },
+        'Restarting service',
+      );
+      exec(
+        svc.command,
+        { cwd: dir, timeout: 120_000 },
+        async (err, stdout, stderr) => {
+          const chatJid = findChatJidByFolder(sourceGroup, registeredGroups);
+          if (chatJid) {
+            const msg = err
+              ? `Failed to restart ${service}: ${(stderr || err.message).slice(0, 300)}`
+              : `Restarted ${service} successfully.`;
+            await deps.sendMessage(chatJid, msg);
+          }
+        },
+      );
+      break;
+    }
+
     default:
       logger.warn({ type: data.type }, 'Unknown IPC task type');
   }
+}
+
+function expandHomePath(p: string): string {
+  if (p.startsWith('~/')) {
+    return path.join(os.homedir(), p.slice(2));
+  }
+  return p;
+}
+
+interface ServiceConfig {
+  directory: string;
+  command: string;
+}
+
+function loadServiceRegistry(): Record<string, ServiceConfig> {
+  try {
+    if (!fs.existsSync(SERVICES_CONFIG_PATH)) {
+      logger.debug({ path: SERVICES_CONFIG_PATH }, 'Services config not found');
+      return {};
+    }
+    return JSON.parse(fs.readFileSync(SERVICES_CONFIG_PATH, 'utf-8'));
+  } catch (err) {
+    logger.error(
+      { err, path: SERVICES_CONFIG_PATH },
+      'Failed to load services config',
+    );
+    return {};
+  }
+}
+
+function findChatJidByFolder(
+  folder: string,
+  registeredGroups: Record<string, RegisteredGroup>,
+): string | null {
+  for (const [jid, group] of Object.entries(registeredGroups)) {
+    if (group.folder === folder) return jid;
+  }
+  return null;
 }
