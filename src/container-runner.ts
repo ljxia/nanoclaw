@@ -240,6 +240,11 @@ function buildVolumeMounts(
       group.name,
       isMain,
     );
+    for (const vm of validatedMounts) {
+      if (!vm.readonly) {
+        ensureContainerWritable(vm.hostPath);
+      }
+    }
     mounts.push(...validatedMounts);
   }
 
@@ -277,6 +282,10 @@ function buildContainerArgs(
     args.push('--user', `${hostUid}:${hostGid}`);
     args.push('-e', 'HOME=/home/node');
   }
+
+  // Use host networking so containers can reach host services (e.g. localhost:3000).
+  // Required for rootless Docker where port forwarding doesn't bind on the bridge.
+  args.push('--network', 'host');
 
   for (const mount of mounts) {
     if (mount.readonly) {
