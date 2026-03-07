@@ -486,13 +486,15 @@ async function handleStop(
 
   const cwd = (input.cwd as string) || '';
   const shortCwd = cwd.split('/').slice(-2).join('/');
+  const permMode = (input.permission_mode as string) || '';
+  const modeLabel = permMode === 'plan' ? ' (plan mode)' : '';
   const summary = (input.last_assistant_message as string) || '';
   const sessionId = (input.session_id as string) || '';
 
   const truncated =
     summary.length > 1500 ? summary.slice(0, 1500) + '…' : summary;
   const msg = (await sendToChannel(
-    `⏸️ **${shortCwd}** wants to stop\n${truncated}\n\nReact ${CONTINUE_EMOJI} to continue or ${STOP_EMOJI} to let it stop. Or reply with instructions.`,
+    `⏸️ **${shortCwd}**${modeLabel} wants to stop\n${truncated}\n\nReact ${CONTINUE_EMOJI} to continue or ${STOP_EMOJI} to let it stop. Or reply with instructions.`,
     true,
   ))!;
   await msg.react(CONTINUE_EMOJI);
@@ -617,7 +619,7 @@ const server = http.createServer((req, res) => {
       }
     });
   } else if (req.method === 'POST' && req.url === '/notify') {
-    // Fire-and-forget notification (e.g. session stopped without hook)
+    // Fire-and-forget notification (Stop fallthrough, SessionEnd, etc.)
     let body = '';
     req.on('data', (chunk) => (body += chunk));
     req.on('end', () => {
@@ -625,12 +627,24 @@ const server = http.createServer((req, res) => {
         const input = JSON.parse(body);
         const cwd = (input.cwd as string) || '';
         const shortCwd = cwd.split('/').slice(-2).join('/');
-        const summary = (input.last_assistant_message as string) || '';
+        const hookEvent = (input.hook_event_name as string) || '';
+        const permMode = (input.permission_mode as string) || '';
         const sessionId = (input.session_id as string) || '';
 
-        const text = summary
-          ? `⏹️ **${shortCwd}** stopped\n${summary.slice(0, 1500)}`
-          : `⏹️ **${shortCwd}** stopped`;
+        // Stop hooks have last_assistant_message; SessionEnd has reason
+        const summary = (input.last_assistant_message as string) || '';
+        const endReason = (input.reason as string) || '';
+
+        let text: string;
+        if (hookEvent === 'SessionEnd') {
+          const modeLabel = permMode === 'plan' ? ' (plan mode)' : '';
+          text = `🔚 **${shortCwd}**${modeLabel} session ended: ${endReason}`;
+        } else {
+          const modeLabel = permMode === 'plan' ? ' (plan mode)' : '';
+          text = summary
+            ? `⏹️ **${shortCwd}**${modeLabel} stopped\n${summary.slice(0, 1500)}`
+            : `⏹️ **${shortCwd}**${modeLabel} stopped`;
+        }
 
         sendToChannel(text)
           .then((sentMsg) => {
