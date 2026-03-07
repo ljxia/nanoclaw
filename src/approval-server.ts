@@ -24,6 +24,8 @@ const TIMEOUT_MS = parseInt(process.env.APPROVAL_TIMEOUT || '600000', 10);
 const APPROVE_EMOJI = '👍';
 const DENY_EMOJI = '👎';
 const ALWAYS_EMOJI = '🤘';
+const CONTINUE_EMOJI = '▶️';
+const STOP_EMOJI = '⏹️';
 
 // Read bot token from .env
 const envVars = readEnvFile(['DISCORD_BOT_TOKEN']);
@@ -76,6 +78,9 @@ const pendingApprovals = new Map<string, PendingRequest>();
 
 // Track pending text replies (for AskUserQuestion)
 const pendingQuestions = new Map<string, PendingRequest>();
+
+// Track pending stop decisions (continue or let stop)
+const pendingStops = new Map<string, PendingRequest>();
 
 // Track stopped sessions by Discord message ID (for resume via reply)
 const stoppedSessions = new Map<string, { sessionId: string; cwd: string }>();
@@ -188,22 +193,40 @@ client.on(Events.MessageReactionAdd, (reaction, user) => {
   if (user.bot) return;
   lastUserId = user.id;
   const msgId = reaction.message.id;
-  const pending = pendingApprovals.get(msgId);
-  if (!pending) return;
-
   const emoji = reaction.emoji.name;
-  if (emoji === APPROVE_EMOJI) {
-    pendingApprovals.delete(msgId);
-    ack(pending.msg, ACK_ALLOW);
-    pending.resolve({ decision: 'allow' });
-  } else if (emoji === DENY_EMOJI) {
-    pendingApprovals.delete(msgId);
-    ack(pending.msg, ACK_DENY);
-    pending.resolve({ decision: 'deny' });
-  } else if (emoji === ALWAYS_EMOJI) {
-    pendingApprovals.delete(msgId);
-    ack(pending.msg, ACK_ALLOW);
-    pending.resolve({ decision: 'allow', always: true });
+
+  // Check pending approvals
+  const pending = pendingApprovals.get(msgId);
+  if (pending) {
+    if (emoji === APPROVE_EMOJI) {
+      pendingApprovals.delete(msgId);
+      ack(pending.msg, ACK_ALLOW);
+      pending.resolve({ decision: 'allow' });
+    } else if (emoji === DENY_EMOJI) {
+      pendingApprovals.delete(msgId);
+      ack(pending.msg, ACK_DENY);
+      pending.resolve({ decision: 'deny' });
+    } else if (emoji === ALWAYS_EMOJI) {
+      pendingApprovals.delete(msgId);
+      ack(pending.msg, ACK_ALLOW);
+      pending.resolve({ decision: 'allow', always: true });
+    }
+    return;
+  }
+
+  // Check pending stop decisions
+  const pendingStop = pendingStops.get(msgId);
+  if (pendingStop) {
+    if (emoji === CONTINUE_EMOJI) {
+      pendingStops.delete(msgId);
+      ack(pendingStop.msg, '▶️');
+      pendingStop.resolve({ decision: 'deny' }); // deny = don't stop = continue
+    } else if (emoji === STOP_EMOJI) {
+      pendingStops.delete(msgId);
+      ack(pendingStop.msg, '⏹️');
+      pendingStop.resolve({ decision: 'allow' }); // allow = let it stop
+    }
+    return;
   }
 });
 
@@ -263,6 +286,16 @@ client.on(Events.MessageCreate, (message: Message) => {
       }
       return;
     }
+    // Reply to a pending stop — text reply means "continue with these instructions"
+    if (pendingStops.has(refId)) {
+      const pending = pendingStops.get(refId)!;
+      pendingStops.delete(refId);
+      console.log(`  Resolved stop with instructions: "${content}"`);
+      ack(pending.msg, ACK_ANSWER);
+      consume(message);
+      pending.resolve({ decision: 'deny', text: content });
+      return;
+    }
   }
 
   // Non-threaded: answer oldest pending question
@@ -290,6 +323,16 @@ client.on(Events.MessageCreate, (message: Message) => {
       consume(message);
       pending.resolve({ decision: 'deny' });
     }
+    return;
+  }
+
+  // Non-threaded: any text for oldest pending stop = instructions to continue
+  if (pendingStops.size > 0) {
+    const [msgId, pending] = pendingStops.entries().next().value!;
+    pendingStops.delete(msgId);
+    ack(pending.msg, ACK_ANSWER);
+    consume(message);
+    pending.resolve({ decision: 'deny', text: content });
   }
 });
 
@@ -435,6 +478,74 @@ async function handleApproval(
   });
 }
 
+// Handle Stop hook — post summary to Discord, wait for continue/stop decision
+async function handleStop(
+  input: Record<string, unknown>,
+): Promise<{ decision: string; reason?: string }> {
+  if (!channel) throw new Error('Discord channel not ready');
+
+  const cwd = (input.cwd as string) || '';
+  const shortCwd = cwd.split('/').slice(-2).join('/');
+  const summary = (input.last_assistant_message as string) || '';
+  const sessionId = (input.session_id as string) || '';
+
+  const truncated = summary.length > 1500 ? summary.slice(0, 1500) + '…' : summary;
+  const msg = (await sendToChannel(
+    `⏸️ **${shortCwd}** wants to stop\n${truncated}\n\nReact ${CONTINUE_EMOJI} to continue or ${STOP_EMOJI} to let it stop. Or reply with instructions.`,
+    true,
+  ))!;
+  await msg.react(CONTINUE_EMOJI);
+  await msg.react(STOP_EMOJI);
+
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      pendingStops.delete(msg.id);
+      ack(msg, ACK_TIMEOUT);
+      // On timeout, allow stop and record session for resume
+      if (sessionId) {
+        stoppedSessions.set(msg.id, { sessionId, cwd });
+        if (stoppedSessions.size > 50) {
+          const oldest = stoppedSessions.keys().next().value!;
+          stoppedSessions.delete(oldest);
+        }
+      }
+      resolve({ decision: 'allow' });
+    }, TIMEOUT_MS);
+
+    const wrappedResolve = (result: {
+      decision: string;
+      text?: string;
+    }) => {
+      clearTimeout(timeout);
+      if (result.decision === 'allow') {
+        // Stopping — record session for resume via reply
+        if (sessionId) {
+          stoppedSessions.set(msg.id, { sessionId, cwd });
+          if (stoppedSessions.size > 50) {
+            const oldest = stoppedSessions.keys().next().value!;
+            stoppedSessions.delete(oldest);
+          }
+        }
+        resolve({ decision: 'allow' });
+      } else if (result.text) {
+        // User replied with instructions — block stop and forward them
+        resolve({
+          decision: 'block',
+          reason: `User replied via Discord: ${result.text}`,
+        });
+      } else {
+        // Continue emoji — block stop with generic reason
+        resolve({
+          decision: 'block',
+          reason: 'User chose to continue via Discord. Ask the user what they would like to do next using AskUserQuestion.',
+        });
+      }
+    };
+
+    pendingStops.set(msg.id, { resolve: wrappedResolve, msg });
+  });
+}
+
 // HTTP server
 const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/request') {
@@ -483,7 +594,31 @@ const server = http.createServer((req, res) => {
         res.end('Invalid JSON');
       }
     });
+  } else if (req.method === 'POST' && req.url === '/stop') {
+    // Stop hook endpoint — posts summary to Discord and waits for
+    // user decision (continue working or let it stop).
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      try {
+        const input = JSON.parse(body);
+
+        handleStop(input).then(({ decision, reason }) => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          if (decision === 'block') {
+            res.end(JSON.stringify({ decision: 'block', reason }));
+          } else {
+            // Allow stop — empty JSON lets Claude stop normally
+            res.end('{}');
+          }
+        });
+      } catch {
+        res.writeHead(400);
+        res.end('Invalid JSON');
+      }
+    });
   } else if (req.method === 'POST' && req.url === '/notify') {
+    // Fire-and-forget notification (e.g. session stopped without hook)
     let body = '';
     req.on('data', (chunk) => (body += chunk));
     req.on('end', () => {
@@ -491,13 +626,12 @@ const server = http.createServer((req, res) => {
         const input = JSON.parse(body);
         const cwd = (input.cwd as string) || '';
         const shortCwd = cwd.split('/').slice(-2).join('/');
-        const stopReason = (input.stop_reason as string) || 'stopped';
-        const summary = (input.summary as string) || '';
+        const summary = (input.last_assistant_message as string) || '';
         const sessionId = (input.session_id as string) || '';
 
         const text = summary
-          ? `⏹️ **${shortCwd}** ${stopReason}\n${summary}`
-          : `⏹️ **${shortCwd}** ${stopReason}`;
+          ? `⏹️ **${shortCwd}** stopped\n${summary.slice(0, 1500)}`
+          : `⏹️ **${shortCwd}** stopped`;
 
         sendToChannel(text)
           .then((sentMsg) => {
@@ -526,6 +660,7 @@ const server = http.createServer((req, res) => {
         discord: client.isReady(),
         pending: pendingApprovals.size,
         questions: pendingQuestions.size,
+        stops: pendingStops.size,
       }),
     );
   } else {

@@ -1,25 +1,38 @@
 #!/bin/bash
-# Claude Code Stop hook — blocks stop and forces AskUserQuestion
-# so Discord-approved sessions stay alive for continued interaction.
+# Claude Code Stop hook — forwards stop decisions to Discord approval server.
+# User can continue (with optional instructions), or let the session stop.
+# Falls through to normal behavior if server is down.
 
 INPUT=$(cat)
-CWD=$(echo "$INPUT" | jq -r '.cwd // ""')
-SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""')
-SUMMARY=$(echo "$INPUT" | jq -r '.last_assistant_message // ""')
 
-# Notify Discord that the session is about to stop
-curl -sf --max-time 5 -X POST \
+# Break infinite loops: if we already blocked a stop, let this one through
+STOP_ACTIVE=$(echo "$INPUT" | jq -r '.stop_hook_active // false')
+if [ "$STOP_ACTIVE" = "true" ]; then
+  # Notify Discord that session stopped (fire-and-forget)
+  echo "$INPUT" | curl -sf --max-time 5 -X POST \
+    -H 'Content-Type: application/json' \
+    -d @- http://127.0.0.1:7711/notify 2>/dev/null
+  exit 0
+fi
+
+echo "⏸️ Waiting for Discord decision..." >&2
+
+RESPONSE=$(echo "$INPUT" | curl -sf --max-time 660 -X POST \
   -H 'Content-Type: application/json' \
-  -d "$(jq -n --arg s "$SUMMARY" --arg cwd "$CWD" --arg sid "$SESSION_ID" \
-    '{summary: $s, cwd: $cwd, session_id: $sid}')" \
-  http://127.0.0.1:7711/notify 2>/dev/null
+  -d @- http://127.0.0.1:7711/stop 2>/dev/null)
 
-# Block the stop and inject context so AskUserQuestion includes what was done
-REASON=$(jq -n --arg summary "$SUMMARY" --arg cwd "$CWD" '
-  "Do not stop yet. You just finished working in " + $cwd + ". Here is a summary of what you did:\n\n" + $summary + "\n\nUse the AskUserQuestion tool to ask the user what they would like to do next. Include a brief recap of what was completed and any noteworthy results (test outcomes, errors, files changed) in your question so the user has full context to decide."
-' -r)
+if [ $? -ne 0 ] || [ -z "$RESPONSE" ]; then
+  # Server unreachable — let Claude stop normally
+  exit 0
+fi
 
-jq -n --arg reason "$REASON" '{
-  "decision": "block",
-  "reason": $reason
-}'
+DECISION=$(echo "$RESPONSE" | jq -r '.decision // ""')
+if [ "$DECISION" = "block" ]; then
+  REASON=$(echo "$RESPONSE" | jq -r '.reason // "User wants to continue"')
+  echo "▶️ $REASON" >&2
+  echo "$RESPONSE"
+else
+  echo "⏹️ Stopping" >&2
+fi
+
+exit 0
