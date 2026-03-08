@@ -291,6 +291,27 @@ export class DiscordChannel implements Channel {
       logger.debug({ jid, err }, 'Failed to send Discord typing indicator');
     }
   }
+
+  async react(
+    chatJid: string,
+    messageId: string,
+    emoji: string,
+  ): Promise<void> {
+    if (!this.client) return;
+    try {
+      const channelId = chatJid.replace(/^dc:/, '');
+      const channel = await this.client.channels.fetch(channelId);
+      if (channel && 'messages' in channel) {
+        const msg = await (channel as TextChannel).messages.fetch(messageId);
+        await msg.react(emoji);
+      }
+    } catch (err) {
+      logger.debug(
+        { chatJid, messageId, err },
+        'Failed to send Discord reaction',
+      );
+    }
+  }
 }
 
 registerChannel('discord', (opts: ChannelOpts) => {

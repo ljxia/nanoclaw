@@ -299,6 +299,23 @@ export class WhatsAppChannel implements Channel {
     }
   }
 
+  async react(
+    chatJid: string,
+    messageId: string,
+    emoji: string,
+  ): Promise<void> {
+    try {
+      await this.sock.sendMessage(chatJid, {
+        react: {
+          text: emoji,
+          key: { remoteJid: chatJid, id: messageId },
+        },
+      });
+    } catch (err) {
+      logger.debug({ chatJid, messageId, err }, 'Failed to send reaction');
+    }
+  }
+
   async syncGroups(force: boolean): Promise<void> {
     return this.syncGroupMetadata(force);
   }

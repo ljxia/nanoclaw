@@ -439,6 +439,18 @@ async function startMessageLoop(): Promise<void> {
             }
           }
 
+          // React with 👀 on the trigger message to acknowledge receipt
+          const triggerMsg = [...groupMessages]
+            .reverse()
+            .find((m) => isMainGroup || TRIGGER_PATTERN.test(m.content.trim()));
+          if (triggerMsg) {
+            channel
+              .react?.(chatJid, triggerMsg.id, '\u{1F440}')
+              ?.catch((err) =>
+                logger.debug({ chatJid, err }, 'Failed to send ack reaction'),
+              );
+          }
+
           // Pull all messages since lastAgentTimestamp so non-trigger
           // context that accumulated between triggers is included.
           const allPending = getMessagesSince(
