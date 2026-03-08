@@ -2,8 +2,18 @@
 # Claude Code Stop hook — forwards stop decisions to Discord approval server.
 # User can continue (with optional instructions), or let the session stop.
 # Falls through to normal behavior if server is down.
+# Skips Discord routing if user is active at the computer (idle < 5 min).
 
 INPUT=$(cat)
+
+# Check system idle time — if user is active, let session stop normally
+IDLE_THRESHOLD_MS=300000  # 5 minutes
+IDLE_MS=$(dbus-send --print-reply --dest=org.gnome.Mutter.IdleMonitor \
+  /org/gnome/Mutter/IdleMonitor/Core org.gnome.Mutter.IdleMonitor.GetIdletime \
+  2>/dev/null | grep uint64 | awk '{print $2}')
+if [ -n "$IDLE_MS" ] && [ "$IDLE_MS" -lt "$IDLE_THRESHOLD_MS" ] 2>/dev/null; then
+  exit 0  # User is active — let Claude stop normally
+fi
 
 # Break infinite loops: if we already blocked a stop, let this one through
 STOP_ACTIVE=$(echo "$INPUT" | jq -r '.stop_hook_active // false')
