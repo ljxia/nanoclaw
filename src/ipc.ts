@@ -567,10 +567,14 @@ export async function processTaskIpc(
     case 'wallet_get_address': {
       const ws = deps.walletService;
       if (!ws) {
-        writeIpcInput(sourceGroup, 'wallet_result:{"error":"Wallet service not configured"}');
+        writeIpcInput(
+          sourceGroup,
+          'wallet_result:{"error":"Wallet service not configured"}',
+        );
         break;
       }
-      const wName = (data as Record<string, unknown>).walletName as string || 'main';
+      const wName =
+        ((data as Record<string, unknown>).walletName as string) || 'main';
       const addr = ws.getAddress(wName);
       const chains = ws.getSupportedChains(wName);
       writeIpcInput(
@@ -588,12 +592,18 @@ export async function processTaskIpc(
     case 'wallet_get_balance': {
       const ws = deps.walletService;
       if (!ws) {
-        writeIpcInput(sourceGroup, 'wallet_result:{"error":"Wallet service not configured"}');
+        writeIpcInput(
+          sourceGroup,
+          'wallet_result:{"error":"Wallet service not configured"}',
+        );
         break;
       }
-      const wName = (data as Record<string, unknown>).walletName as string || 'main';
+      const wName =
+        ((data as Record<string, unknown>).walletName as string) || 'main';
       const chain = (data as Record<string, unknown>).chain as string;
-      const token = (data as Record<string, unknown>).token as string | undefined;
+      const token = (data as Record<string, unknown>).token as
+        | string
+        | undefined;
       try {
         const result = await ws.getBalance(wName, chain, token);
         writeIpcInput(
@@ -619,7 +629,10 @@ export async function processTaskIpc(
     case 'wallet_estimate_gas': {
       const ws = deps.walletService;
       if (!ws) {
-        writeIpcInput(sourceGroup, 'wallet_result:{"error":"Wallet service not configured"}');
+        writeIpcInput(
+          sourceGroup,
+          'wallet_result:{"error":"Wallet service not configured"}',
+        );
         break;
       }
       const d = data as Record<string, unknown>;
@@ -646,12 +659,18 @@ export async function processTaskIpc(
 
     case 'wallet_send_transaction': {
       if (!isMain) {
-        writeIpcInput(sourceGroup, 'wallet_result:{"error":"Only main group can send transactions"}');
+        writeIpcInput(
+          sourceGroup,
+          'wallet_result:{"error":"Only main group can send transactions"}',
+        );
         break;
       }
       const ws = deps.walletService;
       if (!ws) {
-        writeIpcInput(sourceGroup, 'wallet_result:{"error":"Wallet service not configured"}');
+        writeIpcInput(
+          sourceGroup,
+          'wallet_result:{"error":"Wallet service not configured"}',
+        );
         break;
       }
       const d = data as Record<string, unknown>;
@@ -702,12 +721,18 @@ export async function processTaskIpc(
 
     case 'wallet_sign_message': {
       if (!isMain) {
-        writeIpcInput(sourceGroup, 'wallet_result:{"error":"Only main group can sign messages"}');
+        writeIpcInput(
+          sourceGroup,
+          'wallet_result:{"error":"Only main group can sign messages"}',
+        );
         break;
       }
       const ws = deps.walletService;
       if (!ws) {
-        writeIpcInput(sourceGroup, 'wallet_result:{"error":"Wallet service not configured"}');
+        writeIpcInput(
+          sourceGroup,
+          'wallet_result:{"error":"Wallet service not configured"}',
+        );
         break;
       }
       const d = data as Record<string, unknown>;
@@ -753,7 +778,10 @@ export async function processTaskIpc(
     case 'wallet_tx_history': {
       const ws = deps.walletService;
       if (!ws) {
-        writeIpcInput(sourceGroup, 'wallet_result:{"error":"Wallet service not configured"}');
+        writeIpcInput(
+          sourceGroup,
+          'wallet_result:{"error":"Wallet service not configured"}',
+        );
         break;
       }
       const log = isMain

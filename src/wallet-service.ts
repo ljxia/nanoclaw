@@ -162,7 +162,10 @@ function deriveKey(password: string, salt: Buffer): Buffer {
   return crypto.pbkdf2Sync(password, salt, ITERATIONS, KEY_LEN, 'sha512');
 }
 
-export function encryptPrivateKey(privateKey: string, password: string): Buffer {
+export function encryptPrivateKey(
+  privateKey: string,
+  password: string,
+): Buffer {
   const salt = crypto.randomBytes(SALT_LEN);
   const key = deriveKey(password, salt);
   const iv = crypto.randomBytes(IV_LEN);
@@ -212,11 +215,16 @@ export class WalletService {
     for (const [name, entry] of Object.entries(this.config.wallets)) {
       const keyPath = expandHome(entry.encryptedKeyPath);
       if (!fs.existsSync(keyPath)) {
-        logger.warn({ wallet: name, keyPath }, 'Encrypted key file not found — skipping');
+        logger.warn(
+          { wallet: name, keyPath },
+          'Encrypted key file not found — skipping',
+        );
         continue;
       }
 
-      const pwd = password ?? (await promptPassword(`Enter password for wallet "${name}": `));
+      const pwd =
+        password ??
+        (await promptPassword(`Enter password for wallet "${name}": `));
       try {
         const data = fs.readFileSync(keyPath);
         const pk = decryptPrivateKey(data, pwd) as Hex;
@@ -228,7 +236,10 @@ export class WalletService {
           );
         }
         this.decryptedKeys.set(name, pk);
-        logger.info({ wallet: name, address: entry.address }, 'Wallet unlocked');
+        logger.info(
+          { wallet: name, address: entry.address },
+          'Wallet unlocked',
+        );
       } catch (err) {
         logger.error({ wallet: name, err }, 'Failed to unlock wallet');
         throw err;
@@ -264,7 +275,9 @@ export class WalletService {
     const entry = this.config.wallets[walletName];
     if (!entry) throw new Error(`Unknown wallet: ${walletName}`);
     if (!entry.chains.includes(chain)) {
-      throw new Error(`Wallet "${walletName}" not configured for chain "${chain}"`);
+      throw new Error(
+        `Wallet "${walletName}" not configured for chain "${chain}"`,
+      );
     }
 
     const client = this.getPublicClient(chain);
@@ -533,7 +546,10 @@ export function loadWalletConfig(): WalletConfig | null {
       trustedRecipients: raw.trustedRecipients,
     };
   } catch (err) {
-    logger.error({ err, path: WALLET_CONFIG_PATH }, 'Failed to load wallet config');
+    logger.error(
+      { err, path: WALLET_CONFIG_PATH },
+      'Failed to load wallet config',
+    );
     return null;
   }
 }
