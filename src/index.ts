@@ -56,6 +56,7 @@ import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
 import { RateLimiter } from './rate-limiter.js';
+import { loadWalletConfig, WalletService } from './wallet-service.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -580,6 +581,20 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // Initialize wallet signing oracle (optional — skips if no config)
+  const walletConfig = loadWalletConfig();
+  let walletService: WalletService | undefined;
+  if (walletConfig) {
+    walletService = new WalletService(walletConfig);
+    try {
+      const walletPassword = process.env.NANOCLAW_WALLET_PASSWORD;
+      await walletService.unlock(walletPassword);
+    } catch (err) {
+      logger.warn({ err }, 'Wallet unlock failed — wallet features disabled');
+      walletService = undefined;
+    }
+  }
+
   // Start subsystems (independently of connection handler)
   startSchedulerLoop({
     registeredGroups: () => registeredGroups,
@@ -615,6 +630,21 @@ async function main(): Promise<void> {
     getAvailableGroups,
     writeGroupsSnapshot: (gf, im, ag, rj) =>
       writeGroupsSnapshot(gf, im, ag, rj),
+    walletService,
+    requestWalletApproval: async (details) => {
+      try {
+        const res = await fetch('http://127.0.0.1:7711/wallet-approve', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(details),
+        });
+        const body = (await res.json()) as { approved: boolean };
+        return body.approved;
+      } catch (err) {
+        logger.warn({ err }, 'Wallet approval request failed — denying');
+        return false;
+      }
+    },
   });
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();
