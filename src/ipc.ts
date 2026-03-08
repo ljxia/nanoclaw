@@ -13,7 +13,7 @@ import {
 } from './config.js';
 import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
-import { isValidGroupFolder } from './group-folder.js';
+import { isValidGroupFolder, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
 
@@ -458,10 +458,11 @@ export async function processTaskIpc(
       }
       break;
 
+    case 'deploy_service':
     case 'restart_service': {
       const service = data.service as string | undefined;
       if (!service) {
-        logger.warn({ sourceGroup }, 'restart_service missing service name');
+        logger.warn({ sourceGroup }, `${data.type} missing service name`);
         break;
       }
       const services = loadServiceRegistry();
@@ -481,22 +482,76 @@ export async function processTaskIpc(
         }
         break;
       }
+      const isRestart = data.type === 'restart_service';
+      const cmd =
+        isRestart && svc.restartCommand ? svc.restartCommand : svc.command;
+      const action = isRestart ? 'Restarting' : 'Deploying';
       const dir = expandHomePath(svc.directory);
       logger.info(
-        { service, directory: dir, sourceGroup },
-        'Restarting service',
+        { service, directory: dir, sourceGroup, action: data.type, cmd },
+        `${action} service`,
       );
       exec(
-        svc.command,
-        { cwd: dir, timeout: 120_000 },
+        cmd,
+        { cwd: dir, timeout: 300_000, maxBuffer: 5 * 1024 * 1024 },
         async (err, stdout, stderr) => {
-          const chatJid = findChatJidByFolder(sourceGroup, registeredGroups);
-          if (chatJid) {
-            const msg = err
-              ? `Failed to restart ${service}: ${(stderr || err.message).slice(0, 300)}`
-              : `Restarted ${service} successfully.`;
-            await deps.sendMessage(chatJid, msg);
+          const verb = isRestart ? 'restart' : 'deploy';
+          let msg: string;
+          if (err) {
+            const combined = [stdout, stderr].filter(Boolean).join('\n');
+            const clean = combined.replace(
+              /\x1b\[[0-9;]*[a-zA-Z]|\x1b\[[0-9;]*m/g,
+              '',
+            );
+            const detail = (clean || err.message).slice(-4000);
+            msg = `Failed to ${verb} ${service}:\n${detail}`;
+          } else {
+            msg = `${isRestart ? 'Restarted' : 'Deployed'} ${service} successfully.`;
           }
+          writeIpcInput(sourceGroup, msg);
+        },
+      );
+      break;
+    }
+
+    case 'test_service': {
+      const service = data.service as string | undefined;
+      if (!service) {
+        logger.warn({ sourceGroup }, 'test_service missing service name');
+        break;
+      }
+      const testServices = loadServiceRegistry();
+      const testSvc = testServices[service];
+      if (!testSvc?.testCommand) {
+        const chatJid = findChatJidByFolder(sourceGroup, registeredGroups);
+        if (chatJid) {
+          const reason = !testSvc
+            ? `Unknown service "${service}". Available: ${Object.keys(testServices).join(', ') || 'none'}`
+            : `No testCommand configured for "${service}".`;
+          await deps.sendMessage(chatJid, reason);
+        }
+        break;
+      }
+      const testDir = expandHomePath(testSvc.directory);
+      logger.info(
+        { service, directory: testDir, sourceGroup, cmd: testSvc.testCommand },
+        'Testing service',
+      );
+      exec(
+        testSvc.testCommand,
+        { cwd: testDir, timeout: 300_000, maxBuffer: 5 * 1024 * 1024 },
+        async (err, stdout, stderr) => {
+          const combined = [stdout, stderr].filter(Boolean).join('\n');
+          // Strip ANSI escape codes for readability
+          const clean = combined.replace(
+            /\x1b\[[0-9;]*[a-zA-Z]|\x1b\[[0-9;]*m/g,
+            '',
+          );
+          const output = clean.slice(-4000);
+          const msg = err
+            ? `Tests failed for ${service}:\n${output}`
+            : `Tests passed for ${service}:\n${output}`;
+          writeIpcInput(sourceGroup, msg);
         },
       );
       break;
@@ -504,6 +559,21 @@ export async function processTaskIpc(
 
     default:
       logger.warn({ type: data.type }, 'Unknown IPC task type');
+  }
+}
+
+/** Send a message back to the agent via IPC input (not to the user). */
+function writeIpcInput(groupFolder: string, text: string): void {
+  const inputDir = path.join(resolveGroupIpcPath(groupFolder), 'input');
+  try {
+    fs.mkdirSync(inputDir, { recursive: true });
+    const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}.json`;
+    const filepath = path.join(inputDir, filename);
+    const tempPath = `${filepath}.tmp`;
+    fs.writeFileSync(tempPath, JSON.stringify({ type: 'message', text }));
+    fs.renameSync(tempPath, filepath);
+  } catch (err) {
+    logger.warn({ groupFolder, err }, 'Failed to write IPC input');
   }
 }
 
@@ -517,6 +587,8 @@ function expandHomePath(p: string): string {
 interface ServiceConfig {
   directory: string;
   command: string;
+  restartCommand?: string;
+  testCommand?: string;
 }
 
 function loadServiceRegistry(): Record<string, ServiceConfig> {

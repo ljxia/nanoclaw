@@ -359,8 +359,41 @@ Use the list_groups tool to find available groups and their JIDs. The folder nam
 );
 
 server.tool(
+  'deploy_service',
+  `FULL BUILD + DEPLOY. Use this after editing source files — it rebuilds Docker images from source, compiles TypeScript, and restarts containers with the new code.
+
+Use deploy_service when you CHANGED CODE (edited .ts/.js files, updated dependencies, modified Dockerfile, etc.). This is the only way to get code changes into the running containers.
+
+Example workflow:
+1. Edit source files in /workspace/extra/rolypoly/src/
+2. Call deploy_service with service "rolypoly"
+3. The host will run: docker compose build && docker compose up -d
+
+Do NOT use this for config-only changes (env vars, docker-compose.yml tweaks) — use restart_service instead, which is much faster.`,
+  { service: z.string().describe('Service name (e.g. "rolypoly")') },
+  async (args) => {
+    writeIpcFile(TASKS_DIR, {
+      type: 'deploy_service',
+      service: args.service,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    });
+    return {
+      content: [{ type: 'text' as const, text: `Deploy requested for ${args.service}. The host will build and restart containers. Check send_message for the result notification.` }],
+    };
+  },
+);
+
+server.tool(
   'restart_service',
-  'Restart a docker-compose service on the host after code changes. Only works for services configured in the group.',
+  `QUICK RESTART without rebuilding. Use this when you need to restart running containers but did NOT change any source code.
+
+Use restart_service when:
+• You changed environment variables or docker-compose.yml settings
+• A container is misbehaving and needs a fresh start
+• You want to pick up config changes without a full rebuild
+
+Do NOT use this after editing source code — code changes require deploy_service to rebuild the Docker images.`,
   { service: z.string().describe('Service name (e.g. "rolypoly")') },
   async (args) => {
     writeIpcFile(TASKS_DIR, {
@@ -370,7 +403,31 @@ server.tool(
       timestamp: new Date().toISOString(),
     });
     return {
-      content: [{ type: 'text' as const, text: `Restart requested for ${args.service}. Check logs for result.` }],
+      content: [{ type: 'text' as const, text: `Restart requested for ${args.service}. The host will restart containers without rebuilding. Check send_message for the result notification.` }],
+    };
+  },
+);
+
+server.tool(
+  'test_service',
+  `Run the test suite for a service on the host. Use this to verify your code changes BEFORE deploying.
+
+Runs tests against the source files you edited (on the host, not inside Docker). The full test output (pass/fail, errors, assertion details) is sent back to you via message.
+
+Recommended workflow:
+1. Edit source files in /workspace/extra/rolypoly/src/
+2. Call test_service to verify changes compile and pass
+3. If tests pass, call deploy_service to build and deploy`,
+  { service: z.string().describe('Service name (e.g. "rolypoly")') },
+  async (args) => {
+    writeIpcFile(TASKS_DIR, {
+      type: 'test_service',
+      service: args.service,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    });
+    return {
+      content: [{ type: 'text' as const, text: `Test run requested for ${args.service}. Results will be sent via message.` }],
     };
   },
 );
