@@ -1,0 +1,21 @@
+skill: wallet
+version: 1.0.0
+description: "Crypto wallet signing oracle — agents can operate on wallets without accessing private keys"
+core_version: 0.1.0
+adds:
+  - src/wallet-service.ts
+modifies:
+  - src/config.ts
+  - src/ipc.ts
+  - src/mount-security.ts
+  - src/approval-server.ts
+  - container/agent-runner/src/ipc-mcp-stdio.ts
+structured:
+  npm_dependencies:
+    viem: "^2.47.0"
+  env_additions: []
+conflicts: []
+depends: []
+post_apply:
+  - "npm run build"
+test: "npm test"
