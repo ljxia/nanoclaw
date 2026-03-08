@@ -564,6 +564,33 @@ export async function processTaskIpc(
 
     // -- Wallet operations --------------------------------------------------
 
+    case 'wallet_create': {
+      if (!isMain) {
+        writeIpcInput(
+          sourceGroup,
+          'wallet_result:{"error":"Only main group can create wallets"}',
+        );
+        break;
+      }
+      const ws = deps.walletService;
+      if (!ws) {
+        writeIpcInput(
+          sourceGroup,
+          'wallet_result:{"error":"Wallet service not configured"}',
+        );
+        break;
+      }
+      const d = data as Record<string, unknown>;
+      const name = d.walletName as string;
+      const chains = d.chains as string[] | undefined;
+      const result = ws.createWallet(name, chains);
+      writeIpcInput(
+        sourceGroup,
+        `wallet_result:${JSON.stringify({ requestId: d.requestId, ...result })}`,
+      );
+      break;
+    }
+
     case 'wallet_get_address': {
       const ws = deps.walletService;
       if (!ws) {

@@ -437,6 +437,47 @@ Recommended workflow:
 // ---------------------------------------------------------------------------
 
 server.tool(
+  'wallet_create',
+  `Create a new wallet with a random private key. Main group only.
+
+The key is generated and encrypted on the host — you never see it.
+Returns the new wallet's address. The wallet is immediately usable
+with all wallet_* tools.
+
+Use cases:
+• Disposable wallets for testing or one-off operations
+• Separate wallets per project or purpose
+• Multi-wallet strategies (e.g. hot wallet for small ops)
+
+The new wallet inherits the same chain configuration as the main wallet
+unless you specify chains explicitly.`,
+  {
+    wallet_name: z.string().describe('Name for the new wallet (e.g. "test-1", "project-fund")'),
+    chains: z.array(z.string()).optional().describe('Chains to enable (defaults to same as main wallet)'),
+  },
+  async (args) => {
+    if (!isMain) {
+      return {
+        content: [{ type: 'text' as const, text: 'Only the main group can create wallets.' }],
+        isError: true,
+      };
+    }
+    const requestId = `wcreate-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    writeIpcFile(TASKS_DIR, {
+      type: 'wallet_create',
+      walletName: args.wallet_name,
+      chains: args.chains,
+      requestId,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    });
+    return {
+      content: [{ type: 'text' as const, text: `Wallet creation requested for "${args.wallet_name}" (${requestId}). Result will arrive via message.` }],
+    };
+  },
+);
+
+server.tool(
   'wallet_get_address',
   `Get the address and supported chains for a wallet. Read-only, no approval needed.
 

@@ -200,6 +200,7 @@ export class WalletService {
   private publicClients = new Map<string, PublicClient>();
   private txLog: WalletTxRecord[] = [];
   private lastTxTime = new Map<string, number>(); // group -> timestamp
+  private unlockPassword: string | null = null;
 
   constructor(config: WalletConfig) {
     this.config = config;
@@ -225,6 +226,7 @@ export class WalletService {
       const pwd =
         password ??
         (await promptPassword(`Enter password for wallet "${name}": `));
+      this.unlockPassword = pwd;
       try {
         const data = fs.readFileSync(keyPath);
         const pk = decryptPrivateKey(data, pwd) as Hex;
@@ -249,6 +251,78 @@ export class WalletService {
 
   isUnlocked(walletName: string): boolean {
     return this.decryptedKeys.has(walletName);
+  }
+
+  /**
+   * Create a new wallet with a random private key.
+   * The key is generated on the host, encrypted, and stored — the agent
+   * only receives the address. Returns the address or an error.
+   */
+  createWallet(
+    name: string,
+    chains?: string[],
+  ): { address: string; chains: string[] } | { error: string } {
+    // Validate name
+    if (!/^[a-zA-Z0-9_-]{1,32}$/.test(name)) {
+      return {
+        error:
+          'Wallet name must be 1-32 alphanumeric/dash/underscore characters',
+      };
+    }
+    if (this.config.wallets[name]) {
+      return { error: `Wallet "${name}" already exists` };
+    }
+    if (!this.unlockPassword) {
+      return {
+        error: 'No encryption password available — unlock a wallet first',
+      };
+    }
+
+    // Generate random private key
+    const randomBytes = crypto.randomBytes(32);
+    const privateKey = `0x${randomBytes.toString('hex')}` as Hex;
+    const account = privateKeyToAccount(privateKey);
+
+    // Encrypt and save
+    const keysDir = path.join(os.homedir(), '.config', 'nanoclaw', 'keys');
+    fs.mkdirSync(keysDir, { recursive: true });
+    const keyPath = path.join(keysDir, `${name}.enc`);
+    const encrypted = encryptPrivateKey(privateKey, this.unlockPassword);
+    fs.writeFileSync(keyPath, encrypted);
+    fs.chmodSync(keyPath, 0o600);
+
+    // Use the chains from the first configured wallet as default, or the provided list
+    const effectiveChains = chains ??
+      Object.values(this.config.wallets)[0]?.chains ?? ['ethereum'];
+
+    // Register in config
+    const entry: WalletEntry = {
+      address: account.address,
+      encryptedKeyPath: `~/.config/nanoclaw/keys/${name}.enc`,
+      chains: effectiveChains,
+    };
+    this.config.wallets[name] = entry;
+    this.decryptedKeys.set(name, privateKey);
+
+    // Persist to wallet.json
+    try {
+      fs.writeFileSync(
+        WALLET_CONFIG_PATH,
+        JSON.stringify(this.config, null, 2) + '\n',
+      );
+    } catch (err) {
+      logger.warn(
+        { err },
+        'Failed to persist wallet config — wallet works in memory but may not survive restart',
+      );
+    }
+
+    logger.info(
+      { wallet: name, address: account.address, chains: effectiveChains },
+      'Created new wallet',
+    );
+
+    return { address: account.address, chains: effectiveChains };
   }
 
   // -- Read-only operations -------------------------------------------------
