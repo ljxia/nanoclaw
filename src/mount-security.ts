@@ -44,6 +44,7 @@ const DEFAULT_BLOCKED_PATTERNS = [
   'id_ed25519',
   'private_key',
   '.secret',
+  'nanoclaw/keys',
 ];
 
 /**

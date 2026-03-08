@@ -578,6 +578,70 @@ async function handleStop(
   });
 }
 
+// Handle wallet approval — display transaction details and wait for reaction
+async function handleWalletApproval(
+  input: Record<string, unknown>,
+): Promise<{ approved: boolean }> {
+  if (!channel) throw new Error('Discord channel not ready');
+
+  const txType = (input.type as string) || '';
+  const wallet = (input.wallet as string) || 'main';
+  const requestedBy = (input.requestedBy as string) || 'unknown';
+
+  let text: string;
+  if (txType === 'wallet_send_transaction') {
+    const chain = (input.chain as string) || '?';
+    const to = (input.to as string) || '?';
+    const value = (input.value as string) || '?';
+    const token = input.token as string | null;
+    const memo = (input.memo as string) || 'No reason provided';
+    const tokenLabel = token ? `Token: \`${token}\`\n` : '';
+
+    text =
+      `💰 **Transaction Approval**\n\n` +
+      `**Wallet:** ${wallet}\n` +
+      `**Chain:** ${chain}\n` +
+      `**To:** \`${to}\`\n` +
+      `**Amount:** ${value}${token ? '' : ' ETH'}\n` +
+      `${tokenLabel}` +
+      `**Reason:** ${memo}\n` +
+      `**Group:** ${requestedBy}\n\n` +
+      `React ${APPROVE_EMOJI} to approve or ${DENY_EMOJI} to deny`;
+  } else if (txType === 'wallet_sign_message') {
+    const message = (input.message as string) || '?';
+    const memo = (input.memo as string) || 'No reason provided';
+
+    text =
+      `✍️ **Message Signing Request**\n\n` +
+      `**Wallet:** ${wallet}\n` +
+      `**Message:** \`\`\`\n${message.slice(0, 500)}\n\`\`\`\n` +
+      `**Reason:** ${memo}\n` +
+      `**Group:** ${requestedBy}\n\n` +
+      `React ${APPROVE_EMOJI} to sign or ${DENY_EMOJI} to deny`;
+  } else {
+    return { approved: false };
+  }
+
+  const msg = (await sendToChannel(text, true))!;
+  await msg.react(APPROVE_EMOJI);
+  await msg.react(DENY_EMOJI);
+
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      pendingApprovals.delete(msg.id);
+      ack(msg, ACK_TIMEOUT);
+      resolve({ approved: false });
+    }, TIMEOUT_MS);
+
+    const wrappedResolve = (result: { decision: string }) => {
+      clearTimeout(timeout);
+      resolve({ approved: result.decision === 'allow' });
+    };
+
+    pendingApprovals.set(msg.id, { resolve: wrappedResolve, msg });
+  });
+}
+
 // HTTP server
 const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/request') {
@@ -691,6 +755,23 @@ const server = http.createServer((req, res) => {
           .catch(() => {});
         res.writeHead(200);
         res.end('ok');
+      } catch {
+        res.writeHead(400);
+        res.end('Invalid JSON');
+      }
+    });
+  } else if (req.method === 'POST' && req.url === '/wallet-approve') {
+    // Wallet transaction/signing approval endpoint
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      try {
+        const input = JSON.parse(body);
+
+        handleWalletApproval(input).then(({ approved }) => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ approved }));
+        });
       } catch {
         res.writeHead(400);
         res.end('Invalid JSON');

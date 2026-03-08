@@ -16,6 +16,7 @@ import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
+import { WalletService } from './wallet-service.js';
 
 export interface IpcDeps {
   sendMessage: (jid: string, text: string) => Promise<void>;
@@ -29,6 +30,10 @@ export interface IpcDeps {
     availableGroups: AvailableGroup[],
     registeredJids: Set<string>,
   ) => void;
+  walletService?: WalletService;
+  requestWalletApproval?: (
+    details: Record<string, unknown>,
+  ) => Promise<boolean>;
 }
 
 let ipcWatcherRunning = false;
@@ -553,6 +558,213 @@ export async function processTaskIpc(
             : `Tests passed for ${service}:\n${output}`;
           writeIpcInput(sourceGroup, msg);
         },
+      );
+      break;
+    }
+
+    // -- Wallet operations --------------------------------------------------
+
+    case 'wallet_get_address': {
+      const ws = deps.walletService;
+      if (!ws) {
+        writeIpcInput(sourceGroup, 'wallet_result:{"error":"Wallet service not configured"}');
+        break;
+      }
+      const wName = (data as Record<string, unknown>).walletName as string || 'main';
+      const addr = ws.getAddress(wName);
+      const chains = ws.getSupportedChains(wName);
+      writeIpcInput(
+        sourceGroup,
+        `wallet_result:${JSON.stringify({
+          requestId: (data as Record<string, unknown>).requestId,
+          address: addr,
+          chains,
+          wallets: ws.getWalletNames(),
+        })}`,
+      );
+      break;
+    }
+
+    case 'wallet_get_balance': {
+      const ws = deps.walletService;
+      if (!ws) {
+        writeIpcInput(sourceGroup, 'wallet_result:{"error":"Wallet service not configured"}');
+        break;
+      }
+      const wName = (data as Record<string, unknown>).walletName as string || 'main';
+      const chain = (data as Record<string, unknown>).chain as string;
+      const token = (data as Record<string, unknown>).token as string | undefined;
+      try {
+        const result = await ws.getBalance(wName, chain, token);
+        writeIpcInput(
+          sourceGroup,
+          `wallet_result:${JSON.stringify({
+            requestId: (data as Record<string, unknown>).requestId,
+            ...result,
+          })}`,
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        writeIpcInput(
+          sourceGroup,
+          `wallet_result:${JSON.stringify({
+            requestId: (data as Record<string, unknown>).requestId,
+            error: msg,
+          })}`,
+        );
+      }
+      break;
+    }
+
+    case 'wallet_estimate_gas': {
+      const ws = deps.walletService;
+      if (!ws) {
+        writeIpcInput(sourceGroup, 'wallet_result:{"error":"Wallet service not configured"}');
+        break;
+      }
+      const d = data as Record<string, unknown>;
+      try {
+        const result = await ws.estimateGas(
+          d.chain as string,
+          d.to as string,
+          d.value as string,
+          d.token as string | undefined,
+        );
+        writeIpcInput(
+          sourceGroup,
+          `wallet_result:${JSON.stringify({ requestId: d.requestId, ...result })}`,
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        writeIpcInput(
+          sourceGroup,
+          `wallet_result:${JSON.stringify({ requestId: d.requestId, error: msg })}`,
+        );
+      }
+      break;
+    }
+
+    case 'wallet_send_transaction': {
+      if (!isMain) {
+        writeIpcInput(sourceGroup, 'wallet_result:{"error":"Only main group can send transactions"}');
+        break;
+      }
+      const ws = deps.walletService;
+      if (!ws) {
+        writeIpcInput(sourceGroup, 'wallet_result:{"error":"Wallet service not configured"}');
+        break;
+      }
+      const d = data as Record<string, unknown>;
+      const reqId = d.requestId as string;
+
+      // Request human approval via Discord/terminal
+      const approvalDetails = {
+        type: 'wallet_send_transaction',
+        wallet: d.walletName || 'main',
+        chain: d.chain,
+        to: d.to,
+        value: d.value,
+        token: d.token || null,
+        memo: d.memo || null,
+        requestedBy: sourceGroup,
+      };
+
+      let approved = false;
+      if (deps.requestWalletApproval) {
+        approved = await deps.requestWalletApproval(approvalDetails);
+      }
+
+      if (!approved) {
+        writeIpcInput(
+          sourceGroup,
+          `wallet_result:${JSON.stringify({ requestId: reqId, error: 'Transaction denied by user' })}`,
+        );
+        break;
+      }
+
+      const result = await ws.sendTransaction({
+        walletName: (d.walletName as string) || 'main',
+        chain: d.chain as string,
+        to: d.to as string,
+        value: d.value as string,
+        token: d.token as string | undefined,
+        memo: d.memo as string | undefined,
+        requestId: reqId,
+        sourceGroup,
+      });
+
+      writeIpcInput(
+        sourceGroup,
+        `wallet_result:${JSON.stringify({ requestId: reqId, ...result })}`,
+      );
+      break;
+    }
+
+    case 'wallet_sign_message': {
+      if (!isMain) {
+        writeIpcInput(sourceGroup, 'wallet_result:{"error":"Only main group can sign messages"}');
+        break;
+      }
+      const ws = deps.walletService;
+      if (!ws) {
+        writeIpcInput(sourceGroup, 'wallet_result:{"error":"Wallet service not configured"}');
+        break;
+      }
+      const d = data as Record<string, unknown>;
+      const reqId = d.requestId as string;
+
+      // Request human approval
+      const approvalDetails = {
+        type: 'wallet_sign_message',
+        wallet: d.walletName || 'main',
+        message: (d.message as string)?.slice(0, 500),
+        memo: d.memo || null,
+        requestedBy: sourceGroup,
+      };
+
+      let approved = false;
+      if (deps.requestWalletApproval) {
+        approved = await deps.requestWalletApproval(approvalDetails);
+      }
+
+      if (!approved) {
+        writeIpcInput(
+          sourceGroup,
+          `wallet_result:${JSON.stringify({ requestId: reqId, error: 'Signing denied by user' })}`,
+        );
+        break;
+      }
+
+      const result = await ws.signMessage({
+        walletName: (d.walletName as string) || 'main',
+        message: d.message as string,
+        memo: d.memo as string | undefined,
+        requestId: reqId,
+        sourceGroup,
+      });
+
+      writeIpcInput(
+        sourceGroup,
+        `wallet_result:${JSON.stringify({ requestId: reqId, ...result })}`,
+      );
+      break;
+    }
+
+    case 'wallet_tx_history': {
+      const ws = deps.walletService;
+      if (!ws) {
+        writeIpcInput(sourceGroup, 'wallet_result:{"error":"Wallet service not configured"}');
+        break;
+      }
+      const log = isMain
+        ? ws.getTransactionLog()
+        : ws.getTransactionLog(sourceGroup);
+      writeIpcInput(
+        sourceGroup,
+        `wallet_result:${JSON.stringify({
+          requestId: (data as Record<string, unknown>).requestId,
+          transactions: log.slice(-50),
+        })}`,
       );
       break;
     }

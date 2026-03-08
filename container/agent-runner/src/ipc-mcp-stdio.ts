@@ -432,6 +432,181 @@ Recommended workflow:
   },
 );
 
+// ---------------------------------------------------------------------------
+// Wallet tools — signing oracle (key never in container)
+// ---------------------------------------------------------------------------
+
+server.tool(
+  'wallet_get_address',
+  `Get the address and supported chains for a wallet. Read-only, no approval needed.
+
+Returns the public address and list of chains the wallet is configured for.
+Use this to check which wallets are available and what chains they support.`,
+  {
+    wallet_name: z.string().default('main').describe('Wallet name (default "main")'),
+  },
+  async (args) => {
+    const requestId = `waddr-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    writeIpcFile(TASKS_DIR, {
+      type: 'wallet_get_address',
+      walletName: args.wallet_name,
+      requestId,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    });
+    return {
+      content: [{ type: 'text' as const, text: `Address lookup requested (${requestId}). Result will arrive via message.` }],
+    };
+  },
+);
+
+server.tool(
+  'wallet_get_balance',
+  `Check wallet balance on a specific chain. Read-only, no approval needed.
+
+Returns the balance in human-readable units (e.g. "1.5" ETH).
+For ERC-20 tokens, provide the token contract address.`,
+  {
+    wallet_name: z.string().default('main').describe('Wallet name (default "main")'),
+    chain: z.string().describe('Chain name (e.g. "ethereum", "base", "arbitrum")'),
+    token: z.string().optional().describe('ERC-20 contract address (omit for native ETH)'),
+  },
+  async (args) => {
+    const requestId = `wbal-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    writeIpcFile(TASKS_DIR, {
+      type: 'wallet_get_balance',
+      walletName: args.wallet_name,
+      chain: args.chain,
+      token: args.token,
+      requestId,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    });
+    return {
+      content: [{ type: 'text' as const, text: `Balance check requested for ${args.wallet_name} on ${args.chain} (${requestId}).` }],
+    };
+  },
+);
+
+server.tool(
+  'wallet_estimate_gas',
+  `Estimate gas cost for a transaction. Read-only, no approval needed.
+
+Returns gas estimate and cost in ETH. Use this before wallet_send_transaction
+to show the user expected costs.`,
+  {
+    chain: z.string().describe('Chain name'),
+    to: z.string().describe('Recipient address'),
+    value: z.string().describe('Amount in human-readable units (e.g. "0.5")'),
+    token: z.string().optional().describe('ERC-20 contract address (omit for native)'),
+  },
+  async (args) => {
+    const requestId = `wgas-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    writeIpcFile(TASKS_DIR, {
+      type: 'wallet_estimate_gas',
+      chain: args.chain,
+      to: args.to,
+      value: args.value,
+      token: args.token,
+      requestId,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    });
+    return {
+      content: [{ type: 'text' as const, text: `Gas estimate requested (${requestId}).` }],
+    };
+  },
+);
+
+server.tool(
+  'wallet_send_transaction',
+  `Send ETH or ERC-20 tokens from the wallet. REQUIRES human approval via Discord.
+
+The host constructs and signs the transaction — you never see the private key.
+The user will see the exact recipient, amount, and gas cost before approving.
+
+Always call wallet_estimate_gas first so you can tell the user the expected cost.
+Always include a memo explaining why the transaction is needed.`,
+  {
+    wallet_name: z.string().default('main').describe('Wallet name'),
+    chain: z.string().describe('Chain name (e.g. "ethereum", "base")'),
+    to: z.string().describe('Recipient address (0x...)'),
+    value: z.string().describe('Amount in human-readable units (e.g. "0.5" for 0.5 ETH)'),
+    token: z.string().optional().describe('ERC-20 contract address (omit for native ETH)'),
+    memo: z.string().describe('Reason for transaction — shown to user in approval prompt'),
+  },
+  async (args) => {
+    const requestId = `wtx-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    writeIpcFile(TASKS_DIR, {
+      type: 'wallet_send_transaction',
+      walletName: args.wallet_name,
+      chain: args.chain,
+      to: args.to,
+      value: args.value,
+      token: args.token,
+      memo: args.memo,
+      requestId,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    });
+    return {
+      content: [{ type: 'text' as const, text: `Transaction submitted for approval (${requestId}). Waiting for user to approve via Discord. Result will arrive via message.` }],
+    };
+  },
+);
+
+server.tool(
+  'wallet_sign_message',
+  `Sign an arbitrary message with the wallet. REQUIRES human approval via Discord.
+
+The user will see the exact message being signed before approving.
+Always include a memo explaining why signing is needed.
+
+WARNING: Signed messages can authorize actions on-chain (e.g. login, permits).
+Only request signing when the user has explicitly asked for it.`,
+  {
+    wallet_name: z.string().default('main').describe('Wallet name'),
+    message: z.string().describe('Message to sign'),
+    memo: z.string().describe('Reason for signing — shown to user in approval prompt'),
+  },
+  async (args) => {
+    const requestId = `wsig-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    writeIpcFile(TASKS_DIR, {
+      type: 'wallet_sign_message',
+      walletName: args.wallet_name,
+      message: args.message,
+      memo: args.memo,
+      requestId,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    });
+    return {
+      content: [{ type: 'text' as const, text: `Signing request submitted for approval (${requestId}). Waiting for user to approve via Discord.` }],
+    };
+  },
+);
+
+server.tool(
+  'wallet_tx_history',
+  `View recent wallet transaction history. Read-only.
+
+Returns the last 50 transactions with status, hash, amount, and timestamp.
+Main group sees all transactions; other groups see only their own.`,
+  {},
+  async () => {
+    const requestId = `whist-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    writeIpcFile(TASKS_DIR, {
+      type: 'wallet_tx_history',
+      requestId,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    });
+    return {
+      content: [{ type: 'text' as const, text: `Transaction history requested (${requestId}).` }],
+    };
+  },
+);
+
 // Start the stdio transport
 const transport = new StdioServerTransport();
 await server.connect(transport);

@@ -39,6 +39,12 @@ export const SERVICES_CONFIG_PATH = path.join(
   'nanoclaw',
   'services.json',
 );
+export const WALLET_CONFIG_PATH = path.join(
+  HOME_DIR,
+  '.config',
+  'nanoclaw',
+  'wallet.json',
+);
 export const STORE_DIR = path.resolve(PROJECT_ROOT, 'store');
 export const GROUPS_DIR = path.resolve(PROJECT_ROOT, 'groups');
 export const DATA_DIR = path.resolve(PROJECT_ROOT, 'data');
