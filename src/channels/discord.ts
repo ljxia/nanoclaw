@@ -186,8 +186,49 @@ export class DiscordChannel implements Channel {
         resolve();
       });
 
-      this.client!.login(this.botToken);
+      this.client!.login(this.botToken).catch((err) => {
+        // Session limit exceeded — Discord allows ~1000 session starts per 24h.
+        // Log and resolve so other channels can still work; schedule a retry.
+        const resetMatch = err.message?.match(/resets at (.+)/);
+        const resetAt = resetMatch ? resetMatch[1] : null;
+        logger.warn(
+          { err: err.message, resetAt },
+          'Discord login failed — will retry in background',
+        );
+        console.log(
+          `\n  Discord: session limit hit, retrying after ${resetAt || '5 min'}\n`,
+        );
+        resolve(); // Don't block startup
+        this.scheduleReconnect(resetAt);
+      });
     });
+  }
+
+  private scheduleReconnect(resetAt: string | null): void {
+    let delayMs = 5 * 60_000; // default 5 min
+    if (resetAt) {
+      const resetTime = new Date(resetAt).getTime();
+      if (!isNaN(resetTime)) {
+        // Wait until reset + 30s buffer
+        delayMs = Math.max(resetTime - Date.now() + 30_000, 60_000);
+      }
+    }
+    logger.info(
+      { delayMs, retryAt: new Date(Date.now() + delayMs).toISOString() },
+      'Discord reconnect scheduled',
+    );
+    setTimeout(async () => {
+      if (this.client?.isReady()) return;
+      try {
+        logger.info('Discord: attempting reconnect');
+        await this.client?.login(this.botToken);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.warn({ err: msg }, 'Discord reconnect failed — retrying');
+        const match = msg.match(/resets at (.+)/);
+        this.scheduleReconnect(match ? match[1] : null);
+      }
+    }, delayMs);
   }
 
   async sendMessage(jid: string, text: string): Promise<void> {
