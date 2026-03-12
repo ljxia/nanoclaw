@@ -52,7 +52,8 @@ RUN npm run build
 RUN mkdir -p /workspace/group /workspace/global /workspace/extra /workspace/ipc/messages /workspace/ipc/tasks /workspace/ipc/input
 
 # Create entrypoint script
-# Secrets are passed via stdin JSON — piped directly to node (no temp file)
+# Container input (prompt, group info) is passed via stdin JSON.
+# Credentials are injected by the host's credential proxy — never passed here.
 # Follow-up messages arrive via IPC files in /workspace/ipc/input/
 RUN printf '#!/bin/bash\nset -e\ncd /app && npx tsc --outDir /tmp/dist 2>&1 >&2\nln -s /app/node_modules /tmp/dist/node_modules\nchmod -R a-w /tmp/dist\nnode /tmp/dist/index.js\n' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
