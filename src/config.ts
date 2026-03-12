@@ -63,10 +63,7 @@ export const CREDENTIAL_PROXY_PORT = parseInt(
   process.env.CREDENTIAL_PROXY_PORT || '3001',
   10,
 );
-export const PROXY_SOCKET_PATH = path.join(
-  DATA_DIR,
-  'credential-proxy.sock',
-);
+export const PROXY_SOCKET_PATH = path.join(DATA_DIR, 'credential-proxy.sock');
 export const IPC_POLL_INTERVAL = 1000;
 export const IDLE_TIMEOUT = parseInt(process.env.IDLE_TIMEOUT || '1800000', 10); // 30min default — how long to keep container alive after last result
 export const MAX_CONCURRENT_CONTAINERS = Math.max(

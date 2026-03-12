@@ -272,10 +272,14 @@ function buildContainerArgs(
     // TCP bridge inside the container forwards traffic to it.
     const containerSocketPath = '/tmp/credential-proxy.sock';
     args.push(
-      '-v', `${PROXY_SOCKET_PATH}:${containerSocketPath}:ro`,
-      '-e', `ANTHROPIC_BASE_URL=http://127.0.0.1:${CREDENTIAL_PROXY_PORT}`,
-      '-e', `CREDENTIAL_PROXY_SOCKET=${containerSocketPath}`,
-      '-e', `CREDENTIAL_PROXY_PORT=${CREDENTIAL_PROXY_PORT}`,
+      '-v',
+      `${PROXY_SOCKET_PATH}:${containerSocketPath}:ro`,
+      '-e',
+      `ANTHROPIC_BASE_URL=http://127.0.0.1:${CREDENTIAL_PROXY_PORT}`,
+      '-e',
+      `CREDENTIAL_PROXY_SOCKET=${containerSocketPath}`,
+      '-e',
+      `CREDENTIAL_PROXY_PORT=${CREDENTIAL_PROXY_PORT}`,
     );
   } else {
     // Non-rootless: containers can reach the host via TCP

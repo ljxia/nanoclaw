@@ -213,7 +213,10 @@ export function startCredentialProxySocket(
     server.listen(socketPath, () => {
       // Make socket accessible to container's non-root user
       fs.chmodSync(socketPath, 0o666);
-      logger.info({ socketPath, authMode }, 'Credential proxy started (Unix socket)');
+      logger.info(
+        { socketPath, authMode },
+        'Credential proxy started (Unix socket)',
+      );
       resolve(server);
     });
 
