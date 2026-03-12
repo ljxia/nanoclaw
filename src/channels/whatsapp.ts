@@ -46,9 +46,36 @@ export class WhatsAppChannel implements Channel {
   private groupSyncTimerStarted = false;
 
   private opts: WhatsAppChannelOpts;
+  private reconnectAttempts = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private static readonly BASE_DELAY_MS = 5_000;
+  private static readonly MAX_DELAY_MS = 5 * 60_000;
 
   constructor(opts: WhatsAppChannelOpts) {
     this.opts = opts;
+  }
+
+  private reconnectWithBackoff(): void {
+    const delay = Math.min(
+      WhatsAppChannel.BASE_DELAY_MS * Math.pow(2, this.reconnectAttempts),
+      WhatsAppChannel.MAX_DELAY_MS,
+    );
+    this.reconnectAttempts++;
+    logger.info(
+      { delay, attempt: this.reconnectAttempts },
+      'WhatsApp reconnecting with backoff',
+    );
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connectInternal().catch((err) => {
+        logger.error(
+          { err, attempt: this.reconnectAttempts },
+          'WhatsApp reconnect failed',
+        );
+        this.reconnectWithBackoff();
+      });
+    }, delay);
   }
 
   async connect(): Promise<void> {
@@ -110,21 +137,14 @@ export class WhatsAppChannel implements Channel {
         );
 
         if (shouldReconnect) {
-          logger.info('Reconnecting...');
-          this.connectInternal().catch((err) => {
-            logger.error({ err }, 'Failed to reconnect, retrying in 5s');
-            setTimeout(() => {
-              this.connectInternal().catch((err2) => {
-                logger.error({ err: err2 }, 'Reconnection retry failed');
-              });
-            }, 5000);
-          });
+          this.reconnectWithBackoff();
         } else {
           logger.info('Logged out. Run /setup to re-authenticate.');
           process.exit(0);
         }
       } else if (connection === 'open') {
         this.connected = true;
+        this.reconnectAttempts = 0;
         logger.info('Connected to WhatsApp');
 
         // Announce availability so WhatsApp relays subsequent presence updates (typing indicators)
@@ -285,6 +305,10 @@ export class WhatsAppChannel implements Channel {
   }
 
   async disconnect(): Promise<void> {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.connected = false;
     this.sock?.end(undefined);
   }

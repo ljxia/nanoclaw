@@ -57,6 +57,7 @@ import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
 import { RateLimiter } from './rate-limiter.js';
 import { loadWalletConfig, WalletService } from './wallet-service.js';
+import { readEnvFile } from './env.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -587,7 +588,9 @@ async function main(): Promise<void> {
   if (walletConfig) {
     walletService = new WalletService(walletConfig);
     try {
-      const walletPassword = process.env.NANOCLAW_WALLET_PASSWORD;
+      const walletPassword =
+        process.env.NANOCLAW_WALLET_PASSWORD ||
+        readEnvFile(['NANOCLAW_WALLET_PASSWORD']).NANOCLAW_WALLET_PASSWORD;
       await walletService.unlock(walletPassword);
     } catch (err) {
       logger.warn({ err }, 'Wallet unlock failed — wallet features disabled');
