@@ -33,12 +33,6 @@ export const SENDER_ALLOWLIST_PATH = path.join(
   'nanoclaw',
   'sender-allowlist.json',
 );
-export const SERVICES_CONFIG_PATH = path.join(
-  HOME_DIR,
-  '.config',
-  'nanoclaw',
-  'services.json',
-);
 export const WALLET_CONFIG_PATH = path.join(
   HOME_DIR,
   '.config',

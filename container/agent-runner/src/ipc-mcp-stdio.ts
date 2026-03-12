@@ -359,75 +359,38 @@ Use the list_groups tool to find available groups and their JIDs. The folder nam
 );
 
 server.tool(
-  'deploy_service',
-  `FULL BUILD + DEPLOY. Use this after editing source files — it rebuilds Docker images from source, compiles TypeScript, and restarts containers with the new code.
+  'host_exec',
+  `Run a shell command on the HOST machine in a mounted directory. This executes outside the container, on the actual host.
 
-Use deploy_service when you CHANGED CODE (edited .ts/.js files, updated dependencies, modified Dockerfile, etc.). This is the only way to get code changes into the running containers.
+IMPORTANT: Before running commands, always read the project's manifest files first (package.json, Makefile, docker-compose.yml, Justfile, etc.) to discover existing scripts and targets. Use the project's own defined commands (e.g. "npm test", "make deploy", "docker compose up -d") rather than inventing ad-hoc shell commands. The project maintainers know their build/test/deploy pipeline best.
+
+Output (stdout, stderr, exit code) is returned as a structured exec_result message.
 
 Example workflow:
-1. Edit source files in /workspace/extra/rolypoly/src/
-2. Call deploy_service with service "rolypoly"
-3. The host will run: docker compose build && docker compose up -d
+1. Read /workspace/extra/rolypoly/package.json to find available scripts
+2. Edit source files
+3. host_exec({ command: "npm test", cwd: "/workspace/extra/rolypoly" })
+4. host_exec({ command: "npm run deploy", cwd: "/workspace/extra/rolypoly" })
 
-Do NOT use this for config-only changes (env vars, docker-compose.yml tweaks) — use restart_service instead, which is much faster.`,
-  { service: z.string().describe('Service name (e.g. "rolypoly")') },
-  async (args) => {
-    writeIpcFile(TASKS_DIR, {
-      type: 'deploy_service',
-      service: args.service,
-      groupFolder,
-      timestamp: new Date().toISOString(),
-    });
-    return {
-      content: [{ type: 'text' as const, text: `Deploy requested for ${args.service}. The host will build and restart containers. Check send_message for the result notification.` }],
-    };
+Security: only directories mounted into your container via additionalMounts are allowed. Read-only mounts are rejected.`,
+  {
+    command: z.string().describe('Shell command to run on the host'),
+    cwd: z.string().describe('Container-visible path (e.g. "/workspace/extra/rolypoly")'),
+    timeout: z.number().optional().describe('Timeout in milliseconds (default: 5 minutes)'),
   },
-);
-
-server.tool(
-  'restart_service',
-  `QUICK RESTART without rebuilding. Use this when you need to restart running containers but did NOT change any source code.
-
-Use restart_service when:
-• You changed environment variables or docker-compose.yml settings
-• A container is misbehaving and needs a fresh start
-• You want to pick up config changes without a full rebuild
-
-Do NOT use this after editing source code — code changes require deploy_service to rebuild the Docker images.`,
-  { service: z.string().describe('Service name (e.g. "rolypoly")') },
   async (args) => {
+    const requestId = `hexec-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     writeIpcFile(TASKS_DIR, {
-      type: 'restart_service',
-      service: args.service,
+      type: 'host_exec',
+      command: args.command,
+      cwd: args.cwd,
+      timeout: args.timeout,
+      requestId,
       groupFolder,
       timestamp: new Date().toISOString(),
     });
     return {
-      content: [{ type: 'text' as const, text: `Restart requested for ${args.service}. The host will restart containers without rebuilding. Check send_message for the result notification.` }],
-    };
-  },
-);
-
-server.tool(
-  'test_service',
-  `Run the test suite for a service on the host. Use this to verify your code changes BEFORE deploying.
-
-Runs tests against the source files you edited (on the host, not inside Docker). The full test output (pass/fail, errors, assertion details) is sent back to you via message.
-
-Recommended workflow:
-1. Edit source files in /workspace/extra/rolypoly/src/
-2. Call test_service to verify changes compile and pass
-3. If tests pass, call deploy_service to build and deploy`,
-  { service: z.string().describe('Service name (e.g. "rolypoly")') },
-  async (args) => {
-    writeIpcFile(TASKS_DIR, {
-      type: 'test_service',
-      service: args.service,
-      groupFolder,
-      timestamp: new Date().toISOString(),
-    });
-    return {
-      content: [{ type: 'text' as const, text: `Test run requested for ${args.service}. Results will be sent via message.` }],
+      content: [{ type: 'text' as const, text: `Executing on host (${requestId}): ${args.command}\nResult will arrive via exec_result message.` }],
     };
   },
 );

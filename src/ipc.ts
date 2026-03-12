@@ -1,21 +1,16 @@
 import { exec } from 'child_process';
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
 
 import { CronExpressionParser } from 'cron-parser';
 
-import {
-  DATA_DIR,
-  IPC_POLL_INTERVAL,
-  SERVICES_CONFIG_PATH,
-  TIMEZONE,
-} from './config.js';
+import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
-import { RegisteredGroup } from './types.js';
+import { validateMount } from './mount-security.js';
+import { AdditionalMount, RegisteredGroup } from './types.js';
 import { WalletService } from './wallet-service.js';
 
 export interface IpcDeps {
@@ -176,8 +171,11 @@ export async function processTaskIpc(
     groupFolder?: string;
     chatJid?: string;
     targetJid?: string;
-    // For restart_service
-    service?: string;
+    // For host_exec
+    command?: string;
+    cwd?: string;
+    timeout?: number;
+    requestId?: string;
     // For register_group
     jid?: string;
     name?: string;
@@ -463,100 +461,79 @@ export async function processTaskIpc(
       }
       break;
 
-    case 'deploy_service':
-    case 'restart_service': {
-      const service = data.service as string | undefined;
-      if (!service) {
-        logger.warn({ sourceGroup }, `${data.type} missing service name`);
-        break;
-      }
-      const services = loadServiceRegistry();
-      const svc = services[service];
-      if (!svc) {
-        logger.warn(
-          { service, sourceGroup },
-          'Unknown service in restart request',
-        );
-        // Send feedback to the group
-        const chatJid = findChatJidByFolder(sourceGroup, registeredGroups);
-        if (chatJid) {
-          await deps.sendMessage(
-            chatJid,
-            `Unknown service "${service}". Available: ${Object.keys(services).join(', ') || 'none'}`,
-          );
-        }
-        break;
-      }
-      const isRestart = data.type === 'restart_service';
-      const cmd =
-        isRestart && svc.restartCommand ? svc.restartCommand : svc.command;
-      const action = isRestart ? 'Restarting' : 'Deploying';
-      const dir = expandHomePath(svc.directory);
-      logger.info(
-        { service, directory: dir, sourceGroup, action: data.type, cmd },
-        `${action} service`,
-      );
-      exec(
-        cmd,
-        { cwd: dir, timeout: 300_000, maxBuffer: 5 * 1024 * 1024 },
-        async (err, stdout, stderr) => {
-          const verb = isRestart ? 'restart' : 'deploy';
-          let msg: string;
-          if (err) {
-            const combined = [stdout, stderr].filter(Boolean).join('\n');
-            const clean = combined.replace(
-              /\x1b\[[0-9;]*[a-zA-Z]|\x1b\[[0-9;]*m/g,
-              '',
-            );
-            const detail = (clean || err.message).slice(-4000);
-            msg = `Failed to ${verb} ${service}:\n${detail}`;
-          } else {
-            msg = `${isRestart ? 'Restarted' : 'Deployed'} ${service} successfully.`;
-          }
-          writeIpcInput(sourceGroup, msg);
-        },
-      );
-      break;
-    }
+    case 'host_exec': {
+      const command = data.command as string | undefined;
+      const cwd = data.cwd as string | undefined;
+      const requestId = data.requestId as string | undefined;
+      const timeout = (data.timeout as number | undefined) || 300_000;
 
-    case 'test_service': {
-      const service = data.service as string | undefined;
-      if (!service) {
-        logger.warn({ sourceGroup }, 'test_service missing service name');
-        break;
-      }
-      const testServices = loadServiceRegistry();
-      const testSvc = testServices[service];
-      if (!testSvc?.testCommand) {
-        const chatJid = findChatJidByFolder(sourceGroup, registeredGroups);
-        if (chatJid) {
-          const reason = !testSvc
-            ? `Unknown service "${service}". Available: ${Object.keys(testServices).join(', ') || 'none'}`
-            : `No testCommand configured for "${service}".`;
-          await deps.sendMessage(chatJid, reason);
+      if (!command || !cwd || !requestId) {
+        logger.warn(
+          { sourceGroup },
+          'host_exec missing required fields (command, cwd, requestId)',
+        );
+        if (requestId) {
+          writeIpcInput(
+            sourceGroup,
+            `exec_result:${JSON.stringify({ requestId, exitCode: 1, stdout: '', stderr: 'Missing required fields: command, cwd, requestId', durationMs: 0 })}`,
+          );
         }
         break;
       }
-      const testDir = expandHomePath(testSvc.directory);
+
+      const resolved = resolveHostExecPath(cwd, sourceGroup, registeredGroups);
+      if (!resolved) {
+        logger.warn(
+          { sourceGroup, cwd },
+          'host_exec rejected: cwd not in allowed mounts',
+        );
+        writeIpcInput(
+          sourceGroup,
+          `exec_result:${JSON.stringify({ requestId, exitCode: 1, stdout: '', stderr: `Rejected: "${cwd}" is not a mounted directory for this group, or mount validation failed.`, durationMs: 0 })}`,
+        );
+        break;
+      }
+
+      if (resolved.readonly) {
+        logger.warn(
+          { sourceGroup, cwd, hostPath: resolved.hostPath },
+          'host_exec rejected: mount is read-only',
+        );
+        writeIpcInput(
+          sourceGroup,
+          `exec_result:${JSON.stringify({ requestId, exitCode: 1, stdout: '', stderr: `Rejected: "${cwd}" is mounted read-only. host_exec requires a writable mount.`, durationMs: 0 })}`,
+        );
+        break;
+      }
+
+      const MAX_OUTPUT = 50 * 1024; // 50KB per stream
+      const stripAnsi = (s: string) =>
+        s.replace(/\x1b\[[0-9;]*[a-zA-Z]|\x1b\[[0-9;]*m/g, '');
+
       logger.info(
-        { service, directory: testDir, sourceGroup, cmd: testSvc.testCommand },
-        'Testing service',
+        { sourceGroup, cwd: resolved.hostPath, command, requestId },
+        'Executing host_exec',
       );
+
+      const startTime = Date.now();
       exec(
-        testSvc.testCommand,
-        { cwd: testDir, timeout: 300_000, maxBuffer: 5 * 1024 * 1024 },
-        async (err, stdout, stderr) => {
-          const combined = [stdout, stderr].filter(Boolean).join('\n');
-          // Strip ANSI escape codes for readability
-          const clean = combined.replace(
-            /\x1b\[[0-9;]*[a-zA-Z]|\x1b\[[0-9;]*m/g,
-            '',
+        command,
+        {
+          cwd: resolved.hostPath,
+          timeout,
+          shell: '/bin/sh',
+          maxBuffer: 10 * 1024 * 1024,
+        },
+        (_err, stdout, stderr) => {
+          const durationMs = Date.now() - startTime;
+          const exitCode = _err ? (_err as { code?: number }).code ?? 1 : 0;
+          const cleanStdout = stripAnsi(stdout || '').slice(-MAX_OUTPUT);
+          const cleanStderr = stripAnsi(stderr || '').slice(-MAX_OUTPUT);
+
+          writeIpcInput(
+            sourceGroup,
+            `exec_result:${JSON.stringify({ requestId, exitCode, stdout: cleanStdout, stderr: cleanStderr, durationMs })}`,
           );
-          const output = clean.slice(-4000);
-          const msg = err
-            ? `Tests failed for ${service}:\n${output}`
-            : `Tests passed for ${service}:\n${output}`;
-          writeIpcInput(sourceGroup, msg);
         },
       );
       break;
@@ -844,42 +821,71 @@ function writeIpcInput(groupFolder: string, text: string): void {
   }
 }
 
-function expandHomePath(p: string): string {
-  if (p.startsWith('~/')) {
-    return path.join(os.homedir(), p.slice(2));
-  }
-  return p;
-}
-
-interface ServiceConfig {
-  directory: string;
-  command: string;
-  restartCommand?: string;
-  testCommand?: string;
-}
-
-function loadServiceRegistry(): Record<string, ServiceConfig> {
-  try {
-    if (!fs.existsSync(SERVICES_CONFIG_PATH)) {
-      logger.debug({ path: SERVICES_CONFIG_PATH }, 'Services config not found');
-      return {};
-    }
-    return JSON.parse(fs.readFileSync(SERVICES_CONFIG_PATH, 'utf-8'));
-  } catch (err) {
-    logger.error(
-      { err, path: SERVICES_CONFIG_PATH },
-      'Failed to load services config',
-    );
-    return {};
-  }
-}
-
-function findChatJidByFolder(
-  folder: string,
+/**
+ * Resolve a container-visible path (e.g. /workspace/extra/rolypoly) to the
+ * corresponding host path by looking up the requesting group's additionalMounts.
+ * Re-validates the mount against the allowlist to ensure it's still permitted.
+ */
+function resolveHostExecPath(
+  containerCwd: string,
+  sourceGroup: string,
   registeredGroups: Record<string, RegisteredGroup>,
-): string | null {
-  for (const [jid, group] of Object.entries(registeredGroups)) {
-    if (group.folder === folder) return jid;
+): { hostPath: string; readonly: boolean } | null {
+  // Find the group entry by folder
+  let group: RegisteredGroup | undefined;
+  let groupIsMain = false;
+  for (const g of Object.values(registeredGroups)) {
+    if (g.folder === sourceGroup) {
+      group = g;
+      groupIsMain = g.isMain === true;
+      break;
+    }
   }
+  if (!group) return null;
+
+  const mounts = group.containerConfig?.additionalMounts;
+  if (!mounts || mounts.length === 0) return null;
+
+  // Iterate mounts and find one whose container path matches the requested cwd.
+  // Container paths are at /workspace/extra/{containerPath|basename(hostPath)}.
+  for (const mount of mounts) {
+    const containerPath =
+      mount.containerPath || path.basename(mount.hostPath);
+    const fullContainerPath = `/workspace/extra/${containerPath}`;
+
+    // Check if the requested cwd matches or is under this mount
+    if (
+      containerCwd !== fullContainerPath &&
+      !containerCwd.startsWith(fullContainerPath + '/')
+    ) {
+      continue;
+    }
+
+    // Re-validate via mount-security to ensure allowlist still permits it
+    const validation = validateMount(
+      mount as AdditionalMount,
+      groupIsMain,
+    );
+    if (!validation.allowed || !validation.realHostPath) {
+      logger.warn(
+        { sourceGroup, mount: mount.hostPath, reason: validation.reason },
+        'host_exec mount re-validation failed',
+      );
+      return null;
+    }
+
+    // If cwd is a subdirectory of the mount, append the relative portion
+    let hostPath = validation.realHostPath;
+    if (containerCwd !== fullContainerPath) {
+      const relative = containerCwd.slice(fullContainerPath.length + 1);
+      hostPath = path.join(hostPath, relative);
+    }
+
+    return {
+      hostPath,
+      readonly: validation.effectiveReadonly === true,
+    };
+  }
+
   return null;
 }
