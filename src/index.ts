@@ -6,13 +6,17 @@ import {
   CREDENTIAL_PROXY_PORT,
   IDLE_TIMEOUT,
   POLL_INTERVAL,
+  PROXY_SOCKET_PATH,
   RATE_LIMIT_GROUP_MAX,
   RATE_LIMIT_SENDER_MAX,
   RATE_LIMIT_WINDOW_MS,
   TIMEZONE,
   TRIGGER_PATTERN,
 } from './config.js';
-import { startCredentialProxy } from './credential-proxy.js';
+import {
+  startCredentialProxy,
+  startCredentialProxySocket,
+} from './credential-proxy.js';
 import './channels/index.js';
 import {
   getChannelFactory,
@@ -27,6 +31,7 @@ import {
 import {
   cleanupOrphans,
   ensureContainerRuntimeRunning,
+  isRootlessRuntime,
   PROXY_BIND_HOST,
 } from './container-runtime.js';
 import {
@@ -524,15 +529,22 @@ async function main(): Promise<void> {
   loadState();
 
   // Start credential proxy (containers route API calls through this)
+  // Rootless Docker: use Unix socket since containers can't reach host TCP ports.
+  // Non-rootless: use TCP as before.
   const proxyServer = await startCredentialProxy(
     CREDENTIAL_PROXY_PORT,
     PROXY_BIND_HOST,
   );
+  let socketProxyServer: import('http').Server | undefined;
+  if (isRootlessRuntime()) {
+    socketProxyServer = await startCredentialProxySocket(PROXY_SOCKET_PATH);
+  }
 
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
     proxyServer.close();
+    socketProxyServer?.close();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
     process.exit(0);

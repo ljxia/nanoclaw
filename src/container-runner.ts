@@ -14,6 +14,7 @@ import {
   DATA_DIR,
   GROUPS_DIR,
   IDLE_TIMEOUT,
+  PROXY_SOCKET_PATH,
   TIMEZONE,
 } from './config.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
@@ -262,11 +263,29 @@ function buildContainerArgs(
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
 
-  // Route API traffic through the credential proxy (containers never see real secrets)
-  args.push(
-    '-e',
-    `ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}`,
-  );
+  const rootless = isRootlessRuntime();
+
+  if (rootless) {
+    // Rootless Docker: containers run inside rootlesskit's network namespace
+    // and cannot reach the host's TCP ports. Use a Unix socket instead.
+    // The socket is bind-mounted into the container, and a small Node.js
+    // TCP bridge inside the container forwards traffic to it.
+    const containerSocketPath = '/tmp/credential-proxy.sock';
+    args.push(
+      '-v', `${PROXY_SOCKET_PATH}:${containerSocketPath}:ro`,
+      '-e', `ANTHROPIC_BASE_URL=http://127.0.0.1:${CREDENTIAL_PROXY_PORT}`,
+      '-e', `CREDENTIAL_PROXY_SOCKET=${containerSocketPath}`,
+      '-e', `CREDENTIAL_PROXY_PORT=${CREDENTIAL_PROXY_PORT}`,
+    );
+  } else {
+    // Non-rootless: containers can reach the host via TCP
+    args.push(
+      '-e',
+      `ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}`,
+    );
+    // Runtime-specific args for host gateway resolution
+    args.push(...hostGatewayArgs());
+  }
 
   // Mirror the host's auth method with a placeholder value.
   // API key mode: SDK sends x-api-key, proxy replaces with real key.
@@ -278,9 +297,6 @@ function buildContainerArgs(
   } else {
     args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
   }
-
-  // Runtime-specific args for host gateway resolution
-  args.push(...hostGatewayArgs());
 
   // Run as host user so bind-mounted files are accessible.
   // Skip when running as root (uid 0), as the container's node user (uid 1000),

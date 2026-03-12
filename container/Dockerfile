@@ -55,7 +55,9 @@ RUN mkdir -p /workspace/group /workspace/global /workspace/extra /workspace/ipc/
 # Container input (prompt, group info) is passed via stdin JSON.
 # Credentials are injected by the host's credential proxy — never passed here.
 # Follow-up messages arrive via IPC files in /workspace/ipc/input/
-RUN printf '#!/bin/bash\nset -e\ncd /app && npx tsc --outDir /tmp/dist 2>&1 >&2\nln -s /app/node_modules /tmp/dist/node_modules\nchmod -R a-w /tmp/dist\nnode /tmp/dist/index.js\n' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
+# If CREDENTIAL_PROXY_SOCKET is set, start a TCP-to-Unix-socket bridge
+# so the Anthropic SDK can reach the host's credential proxy via localhost.
+RUN printf '#!/bin/bash\nset -e\nif [ -n "$CREDENTIAL_PROXY_SOCKET" ] && [ -S "$CREDENTIAL_PROXY_SOCKET" ]; then\n  node -e "\n    const net = require('"'"'net'"'"');\n    const server = net.createServer(client => {\n      const upstream = net.createConnection(process.env.CREDENTIAL_PROXY_SOCKET);\n      client.pipe(upstream);\n      upstream.pipe(client);\n      client.on('"'"'error'"'"', () => upstream.destroy());\n      upstream.on('"'"'error'"'"', () => client.destroy());\n    });\n    server.listen(parseInt(process.env.CREDENTIAL_PROXY_PORT || '"'"'3001'"'"'), '"'"'127.0.0.1'"'"');\n  " &\n  sleep 0.2\nfi\ncd /app && npx tsc --outDir /tmp/dist 2>&1 >&2\nln -s /app/node_modules /tmp/dist/node_modules\nchmod -R a-w /tmp/dist\nnode /tmp/dist/index.js\n' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
 # Set ownership to node user (non-root) for writable directories
 RUN chown -R node:node /workspace && chmod 755 /home/node
