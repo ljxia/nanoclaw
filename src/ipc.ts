@@ -526,7 +526,7 @@ export async function processTaskIpc(
         },
         (_err, stdout, stderr) => {
           const durationMs = Date.now() - startTime;
-          const exitCode = _err ? (_err as { code?: number }).code ?? 1 : 0;
+          const exitCode = _err ? ((_err as { code?: number }).code ?? 1) : 0;
           const cleanStdout = stripAnsi(stdout || '').slice(-MAX_OUTPUT);
           const cleanStderr = stripAnsi(stderr || '').slice(-MAX_OUTPUT);
 
@@ -849,8 +849,7 @@ function resolveHostExecPath(
   // Iterate mounts and find one whose container path matches the requested cwd.
   // Container paths are at /workspace/extra/{containerPath|basename(hostPath)}.
   for (const mount of mounts) {
-    const containerPath =
-      mount.containerPath || path.basename(mount.hostPath);
+    const containerPath = mount.containerPath || path.basename(mount.hostPath);
     const fullContainerPath = `/workspace/extra/${containerPath}`;
 
     // Check if the requested cwd matches or is under this mount
@@ -862,10 +861,7 @@ function resolveHostExecPath(
     }
 
     // Re-validate via mount-security to ensure allowlist still permits it
-    const validation = validateMount(
-      mount as AdditionalMount,
-      groupIsMain,
-    );
+    const validation = validateMount(mount as AdditionalMount, groupIsMain);
     if (!validation.allowed || !validation.realHostPath) {
       logger.warn(
         { sourceGroup, mount: mount.hostPath, reason: validation.reason },
