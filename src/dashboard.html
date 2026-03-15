@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NanoClaw Dashboard</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: #0a0a0f;
+    color: #e0e0e8;
+    min-height: 100vh;
+  }
+  header {
+    padding: 16px 24px;
+    border-bottom: 1px solid #1a1a2e;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  header h1 { font-size: 18px; font-weight: 600; color: #f0f0f5; }
+  .conn-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #444;
+    transition: background 0.3s;
+  }
+  .conn-dot.connected { background: #4ade80; }
+  .conn-dot.error { background: #ef4444; }
+  .conn-label { font-size: 12px; color: #888; }
+  .concurrency {
+    margin-left: auto;
+    font-size: 13px;
+    color: #888;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .concurrency-bar {
+    width: 80px; height: 6px;
+    background: #1a1a2e;
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .concurrency-fill {
+    height: 100%;
+    background: #6366f1;
+    border-radius: 3px;
+    transition: width 0.3s;
+  }
+  main {
+    padding: 24px;
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 20px;
+    max-width: 900px;
+    margin: 0 auto;
+  }
+  .card {
+    background: #12121e;
+    border: 1px solid #1a1a2e;
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .card-header {
+    padding: 12px 16px;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #888;
+    border-bottom: 1px solid #1a1a2e;
+  }
+  .card-body { padding: 12px 16px; }
+
+  /* Agent cards */
+  .agents-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+  .agent-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    border-bottom: 1px solid #0e0e18;
+    transition: background 0.2s;
+  }
+  .agent-row:last-child { border-bottom: none; }
+  .agent-row:hover { background: #16162a; }
+  .phase-indicator {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .phase-initializing { background: #fbbf24; animation: pulse 2s infinite; }
+  .phase-working { background: #6366f1; animation: pulse 1.5s infinite; }
+  .phase-responding { background: #4ade80; animation: pulse 1s infinite; }
+  .phase-idle { background: #444; }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+  .agent-name {
+    font-size: 14px;
+    font-weight: 500;
+    color: #e0e0e8;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .agent-phase {
+    font-size: 12px;
+    color: #888;
+    flex-shrink: 0;
+  }
+  .agent-elapsed {
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    color: #666;
+    flex-shrink: 0;
+    min-width: 48px;
+    text-align: right;
+  }
+  .tag {
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+  .tag-task { background: #2d1b69; color: #a78bfa; }
+  .tag-msg { background: #1b3d2e; color: #6ee7b7; }
+
+  /* Empty state */
+  .empty {
+    padding: 32px 16px;
+    text-align: center;
+    color: #555;
+    font-size: 13px;
+  }
+
+  /* Activity log */
+  .activity-log {
+    max-height: 320px;
+    overflow-y: auto;
+    font-size: 12px;
+    scrollbar-width: thin;
+    scrollbar-color: #2a2a3e #12121e;
+  }
+  .log-entry {
+    padding: 6px 16px;
+    border-bottom: 1px solid #0e0e18;
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+  }
+  .log-entry:last-child { border-bottom: none; }
+  .log-time { color: #555; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+  .log-group { color: #6366f1; flex-shrink: 0; font-weight: 500; }
+  .log-text { color: #aaa; }
+  .log-phase { color: #fbbf24; }
+  .log-start { color: #4ade80; }
+  .log-end { color: #888; }
+
+  /* Queue info */
+  .queue-info {
+    font-size: 13px;
+    color: #888;
+    padding: 4px 0;
+  }
+  .queue-info span { color: #e0e0e8; font-weight: 500; }
+
+  /* Agent row clickable */
+  .agent-row { cursor: pointer; }
+
+  /* Agent detail panel */
+  .agent-detail {
+    display: none;
+    position: fixed;
+    top: 0; right: 0; bottom: 0;
+    width: min(600px, 100vw);
+    background: #0d0d18;
+    border-left: 1px solid #1a1a2e;
+    z-index: 100;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .agent-detail.open { display: flex; }
+  .detail-header {
+    padding: 14px 20px;
+    border-bottom: 1px solid #1a1a2e;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+  }
+  .detail-header h2 {
+    font-size: 15px;
+    font-weight: 600;
+    color: #f0f0f5;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .detail-close {
+    background: none;
+    border: 1px solid #2a2a3e;
+    color: #888;
+    font-size: 13px;
+    cursor: pointer;
+    padding: 4px 10px;
+    border-radius: 4px;
+  }
+  .detail-close:hover { color: #e0e0e8; border-color: #444; }
+  .detail-stream {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px 0;
+    font-size: 13px;
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    line-height: 1.5;
+    scrollbar-width: thin;
+    scrollbar-color: #2a2a3e #0d0d18;
+  }
+  .stream-entry {
+    padding: 4px 20px;
+    border-left: 3px solid transparent;
+  }
+  .stream-entry.kind-text {
+    border-left-color: #6366f1;
+    color: #d0d0e0;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .stream-entry.kind-tool_use {
+    border-left-color: #fbbf24;
+    color: #ccc;
+  }
+  .stream-entry .tool-name {
+    color: #fbbf24;
+    font-weight: 600;
+  }
+  .stream-entry .tool-input {
+    color: #777;
+    font-size: 12px;
+    display: block;
+    margin-top: 2px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .stream-entry.kind-tool_result {
+    border-left-color: #4ade80;
+    color: #888;
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .stream-entry.kind-result {
+    border-left-color: #4ade80;
+    color: #d0d0e0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    background: #0f1a14;
+  }
+  .stream-entry.kind-phase {
+    border-left-color: #444;
+    color: #666;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .stream-empty {
+    padding: 32px 20px;
+    text-align: center;
+    color: #555;
+    font-size: 13px;
+  }
+  .detail-phase {
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+  }
+  .detail-phase-initializing { background: #2d2305; color: #fbbf24; }
+  .detail-phase-working { background: #1b1b4e; color: #818cf8; }
+  .detail-phase-responding { background: #0f2a1a; color: #4ade80; }
+  .detail-phase-idle { background: #1a1a1a; color: #666; }
+
+  /* Overlay for mobile */
+  .detail-overlay {
+    display: none;
+    position: fixed;
+    top: 0; left: 0; bottom: 0; right: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 99;
+  }
+  .detail-overlay.open { display: block; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>NanoClaw</h1>
+  <div class="conn-dot" id="connDot"></div>
+  <span class="conn-label" id="connLabel">connecting...</span>
+  <div class="concurrency">
+    <span id="concurrencyText">0 / ?</span>
+    <div class="concurrency-bar">
+      <div class="concurrency-fill" id="concurrencyFill" style="width: 0%"></div>
+    </div>
+    <span id="waitingText"></span>
+  </div>
+</header>
+
+<main>
+  <div class="card">
+    <div class="card-header">Active Agents</div>
+    <div id="agentsContainer" class="agents-grid">
+      <div class="empty">No active agents</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">Activity</div>
+    <div id="activityLog" class="activity-log">
+      <div class="empty">Waiting for activity...</div>
+    </div>
+  </div>
+</main>
+
+<div class="detail-overlay" id="detailOverlay"></div>
+<div class="agent-detail" id="agentDetail">
+  <div class="detail-header">
+    <div class="phase-indicator" id="detailPhaseIndicator"></div>
+    <h2 id="detailGroupName">Agent</h2>
+    <span class="detail-phase" id="detailPhaseLabel"></span>
+    <button class="detail-close" id="detailClose">ESC</button>
+  </div>
+  <div class="detail-stream" id="detailStream">
+    <div class="stream-empty">Connecting to agent stream...</div>
+  </div>
+</div>
+
+<script>
+const agents = new Map(); // groupName -> { phase, startTime, containerName, isTask }
+let logEntries = [];
+const MAX_LOG_ENTRIES = 100;
+let logCleared = false;
+
+function formatElapsed(ms) {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60);
+  const rs = s % 60;
+  if (m < 60) return m + 'm ' + String(rs).padStart(2, '0') + 's';
+  const h = Math.floor(m / 60);
+  return h + 'h ' + String(m % 60).padStart(2, '0') + 'm';
+}
+
+function formatTime(ts) {
+  const d = new Date(ts);
+  return d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function renderAgents() {
+  const container = document.getElementById('agentsContainer');
+  if (agents.size === 0) {
+    container.innerHTML = '<div class="empty">No active agents</div>';
+    return;
+  }
+
+  let html = '';
+  for (const [name, info] of agents) {
+    const elapsed = Date.now() - info.startTime;
+    const phaseLabel = info.phase || 'initializing';
+    const tagClass = info.isTask ? 'tag-task' : 'tag-msg';
+    const tagText = info.isTask ? 'task' : 'msg';
+    html += `
+      <div class="agent-row" data-group="${name}">
+        <div class="phase-indicator phase-${phaseLabel}"></div>
+        <div class="agent-name">${name}</div>
+        <span class="tag ${tagClass}">${tagText}</span>
+        <div class="agent-phase">${phaseLabel}</div>
+        <div class="agent-elapsed">${formatElapsed(elapsed)}</div>
+      </div>`;
+  }
+  container.innerHTML = html;
+}
+
+function addLogEntry(type, group, text, timestamp) {
+  if (!logCleared) {
+    logCleared = true;
+    logEntries = [];
+  }
+  logEntries.push({ type, group, text, timestamp: timestamp || new Date().toISOString() });
+  if (logEntries.length > MAX_LOG_ENTRIES) logEntries.shift();
+  renderLog();
+}
+
+function renderLog() {
+  const container = document.getElementById('activityLog');
+  if (logEntries.length === 0) {
+    container.innerHTML = '<div class="empty">Waiting for activity...</div>';
+    return;
+  }
+
+  let html = '';
+  for (const entry of logEntries) {
+    const cssClass = 'log-' + entry.type;
+    html += `
+      <div class="log-entry">
+        <span class="log-time">${formatTime(entry.timestamp)}</span>
+        <span class="log-group">${entry.group}</span>
+        <span class="${cssClass}">${entry.text}</span>
+      </div>`;
+  }
+  container.innerHTML = html;
+  container.scrollTop = container.scrollHeight;
+}
+
+function updateConcurrency(activeCount, maxConcurrent, waitingCount) {
+  document.getElementById('concurrencyText').textContent = activeCount + ' / ' + maxConcurrent;
+  const pct = maxConcurrent > 0 ? (activeCount / maxConcurrent) * 100 : 0;
+  document.getElementById('concurrencyFill').style.width = pct + '%';
+  const waitEl = document.getElementById('waitingText');
+  waitEl.textContent = waitingCount > 0 ? waitingCount + ' waiting' : '';
+}
+
+// Update elapsed times every second
+setInterval(() => {
+  const rows = document.querySelectorAll('.agent-row');
+  for (const row of rows) {
+    const name = row.dataset.group;
+    const info = agents.get(name);
+    if (!info) continue;
+    const el = row.querySelector('.agent-elapsed');
+    if (el) el.textContent = formatElapsed(Date.now() - info.startTime);
+  }
+}, 1000);
+
+// SSE connection
+function connect() {
+  const dot = document.getElementById('connDot');
+  const label = document.getElementById('connLabel');
+  const es = new EventSource('/events');
+
+  es.onopen = () => {
+    dot.className = 'conn-dot connected';
+    label.textContent = 'connected';
+  };
+
+  es.onerror = () => {
+    dot.className = 'conn-dot error';
+    label.textContent = 'reconnecting...';
+  };
+
+  es.onmessage = (e) => {
+    const event = JSON.parse(e.data);
+
+    switch (event.type) {
+      case 'container:start':
+        agents.set(event.group, {
+          phase: 'initializing',
+          startTime: Date.now(),
+          containerName: event.containerName,
+          isTask: event.isTask,
+        });
+        renderAgents();
+        addLogEntry('start', event.group, 'Container started' + (event.isTask ? ' (task)' : ''), event.timestamp);
+        break;
+
+      case 'container:end': {
+        agents.delete(event.group);
+        renderAgents();
+        const dur = formatElapsed(event.duration);
+        const status = event.exitCode === 0 ? 'completed' : 'exited (' + event.exitCode + ')';
+        addLogEntry('end', event.group, status + ' after ' + dur, event.timestamp);
+        break;
+      }
+
+      case 'agent:phase': {
+        const info = agents.get(event.group);
+        if (info) {
+          info.phase = event.phase;
+          renderAgents();
+        }
+        addLogEntry('phase', event.group, event.phase + (event.detail ? ': ' + event.detail : ''), event.timestamp);
+        break;
+      }
+
+      case 'queue:update':
+        updateConcurrency(event.activeCount, event.maxConcurrent, event.waitingCount);
+        // Sync agent list from queue state (handles reconnection)
+        const activeNames = new Set();
+        for (const ag of event.activeGroups || []) {
+          const name = ag.name || ag.groupFolder || ag.jid;
+          activeNames.add(name);
+          if (!agents.has(name)) {
+            agents.set(name, {
+              phase: ag.idleWaiting ? 'idle' : 'working',
+              startTime: ag.startTime || Date.now(),
+              containerName: ag.containerName,
+              isTask: ag.isTask,
+            });
+          } else {
+            const existing = agents.get(name);
+            if (ag.idleWaiting && existing.phase !== 'idle') {
+              existing.phase = 'idle';
+            }
+          }
+        }
+        // Remove agents no longer active
+        for (const name of agents.keys()) {
+          if (!activeNames.has(name)) agents.delete(name);
+        }
+        renderAgents();
+        break;
+    }
+  };
+}
+
+connect();
+
+// --- Agent detail panel ---
+let detailGroup = null;
+let detailES = null;
+let detailEntries = [];
+const MAX_DETAIL_ENTRIES = 200;
+
+function escapeHtml(str) {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function openAgentDetail(group) {
+  if (detailES) { detailES.close(); detailES = null; }
+  detailGroup = group;
+  detailEntries = [];
+
+  document.getElementById('detailGroupName').textContent = group;
+  document.getElementById('agentDetail').classList.add('open');
+  document.getElementById('detailOverlay').classList.add('open');
+  renderDetailStream();
+  updateDetailPhase();
+
+  detailES = new EventSource('/agent-stream/' + encodeURIComponent(group));
+  detailES.onmessage = (e) => {
+    const event = JSON.parse(e.data);
+    if (event.type === 'agent:stream') {
+      const entry = event.entry;
+      detailEntries.push(entry);
+      if (detailEntries.length > MAX_DETAIL_ENTRIES) detailEntries.shift();
+      appendDetailEntry(entry);
+    } else if (event.type === 'agent:phase') {
+      detailEntries.push({ kind: 'phase', content: event.phase + (event.detail ? ': ' + event.detail : '') });
+      if (detailEntries.length > MAX_DETAIL_ENTRIES) detailEntries.shift();
+      appendDetailEntry(detailEntries[detailEntries.length - 1]);
+      updateDetailPhase();
+    } else if (event.type === 'container:end') {
+      detailEntries.push({ kind: 'phase', content: 'container ended (exit ' + (event.exitCode ?? '?') + ')' });
+      appendDetailEntry(detailEntries[detailEntries.length - 1]);
+      updateDetailPhase();
+    }
+  };
+}
+
+function closeAgentDetail() {
+  if (detailES) { detailES.close(); detailES = null; }
+  detailGroup = null;
+  document.getElementById('agentDetail').classList.remove('open');
+  document.getElementById('detailOverlay').classList.remove('open');
+}
+
+function updateDetailPhase() {
+  const info = agents.get(detailGroup);
+  const phase = info ? info.phase : 'idle';
+  const indicator = document.getElementById('detailPhaseIndicator');
+  indicator.className = 'phase-indicator phase-' + phase;
+  const label = document.getElementById('detailPhaseLabel');
+  label.textContent = phase;
+  label.className = 'detail-phase detail-phase-' + phase;
+}
+
+function renderDetailStream() {
+  const container = document.getElementById('detailStream');
+  if (detailEntries.length === 0) {
+    container.innerHTML = '<div class="stream-empty">Waiting for agent activity...</div>';
+    return;
+  }
+  let html = '';
+  for (const entry of detailEntries) {
+    html += buildDetailEntryHtml(entry);
+  }
+  container.innerHTML = html;
+  container.scrollTop = container.scrollHeight;
+}
+
+function buildDetailEntryHtml(entry) {
+  if (entry.kind === 'text') {
+    return '<div class="stream-entry kind-text">' + escapeHtml(entry.content) + '</div>';
+  }
+  if (entry.kind === 'tool_use') {
+    let html = '<div class="stream-entry kind-tool_use"><span class="tool-name">' + escapeHtml(entry.tool || 'tool') + '</span>';
+    if (entry.content) {
+      html += '<span class="tool-input">' + escapeHtml(entry.content) + '</span>';
+    }
+    html += '</div>';
+    return html;
+  }
+  if (entry.kind === 'tool_result') {
+    return '<div class="stream-entry kind-tool_result">' + escapeHtml(entry.content) + '</div>';
+  }
+  if (entry.kind === 'result') {
+    return '<div class="stream-entry kind-result">' + escapeHtml(entry.content) + '</div>';
+  }
+  if (entry.kind === 'phase') {
+    return '<div class="stream-entry kind-phase">' + escapeHtml(entry.content) + '</div>';
+  }
+  return '';
+}
+
+function appendDetailEntry(entry) {
+  const container = document.getElementById('detailStream');
+  // Clear the empty message on first entry
+  const emptyEl = container.querySelector('.stream-empty');
+  if (emptyEl) emptyEl.remove();
+
+  const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 40;
+  container.insertAdjacentHTML('beforeend', buildDetailEntryHtml(entry));
+  if (atBottom) container.scrollTop = container.scrollHeight;
+}
+
+// Click handler for agent rows (delegated)
+document.getElementById('agentsContainer').addEventListener('click', (e) => {
+  const row = e.target.closest('.agent-row');
+  if (row && row.dataset.group) {
+    openAgentDetail(row.dataset.group);
+  }
+});
+
+document.getElementById('detailClose').addEventListener('click', closeAgentDetail);
+document.getElementById('detailOverlay').addEventListener('click', closeAgentDetail);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && detailGroup) closeAgentDetail();
+});
+</script>
+</body>
+</html>

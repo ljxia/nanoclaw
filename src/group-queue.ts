@@ -24,7 +24,24 @@ interface GroupState {
   process: ChildProcess | null;
   containerName: string | null;
   groupFolder: string | null;
+  groupName: string | null;
   retryCount: number;
+  startTime: number;
+}
+
+export interface QueueSnapshot {
+  activeCount: number;
+  maxConcurrent: number;
+  activeGroups: Array<{
+    jid: string;
+    name: string | null;
+    containerName: string | null;
+    groupFolder: string | null;
+    isTask: boolean;
+    idleWaiting: boolean;
+    startTime: number;
+  }>;
+  waitingCount: number;
 }
 
 export class GroupQueue {
@@ -34,6 +51,40 @@ export class GroupQueue {
   private processMessagesFn: ((groupJid: string) => Promise<boolean>) | null =
     null;
   private shuttingDown = false;
+  private stateChangeCallback: ((state: QueueSnapshot) => void) | null = null;
+
+  onStateChange(cb: (state: QueueSnapshot) => void): void {
+    this.stateChangeCallback = cb;
+  }
+
+  private emitStateChange(): void {
+    if (this.stateChangeCallback) {
+      this.stateChangeCallback(this.getState());
+    }
+  }
+
+  getState(): QueueSnapshot {
+    const activeGroups: QueueSnapshot['activeGroups'] = [];
+    for (const [jid, state] of this.groups) {
+      if (state.active) {
+        activeGroups.push({
+          jid,
+          name: state.groupName,
+          containerName: state.containerName,
+          groupFolder: state.groupFolder,
+          isTask: state.isTaskContainer,
+          idleWaiting: state.idleWaiting,
+          startTime: state.startTime,
+        });
+      }
+    }
+    return {
+      activeCount: this.activeCount,
+      maxConcurrent: MAX_CONCURRENT_CONTAINERS,
+      activeGroups,
+      waitingCount: this.waitingGroups.length,
+    };
+  }
 
   private getGroup(groupJid: string): GroupState {
     let state = this.groups.get(groupJid);
@@ -48,7 +99,9 @@ export class GroupQueue {
         process: null,
         containerName: null,
         groupFolder: null,
+        groupName: null,
         retryCount: 0,
+        startTime: 0,
       };
       this.groups.set(groupJid, state);
     }
@@ -134,11 +187,13 @@ export class GroupQueue {
     proc: ChildProcess,
     containerName: string,
     groupFolder?: string,
+    groupName?: string,
   ): void {
     const state = this.getGroup(groupJid);
     state.process = proc;
     state.containerName = containerName;
     if (groupFolder) state.groupFolder = groupFolder;
+    if (groupName) state.groupName = groupName;
   }
 
   /**
@@ -148,6 +203,7 @@ export class GroupQueue {
   notifyIdle(groupJid: string): void {
     const state = this.getGroup(groupJid);
     state.idleWaiting = true;
+    this.emitStateChange();
     if (state.pendingTasks.length > 0) {
       this.closeStdin(groupJid);
     }
@@ -202,7 +258,9 @@ export class GroupQueue {
     state.idleWaiting = false;
     state.isTaskContainer = false;
     state.pendingMessages = false;
+    state.startTime = Date.now();
     this.activeCount++;
+    this.emitStateChange();
 
     logger.debug(
       { groupJid, reason, activeCount: this.activeCount },
@@ -227,6 +285,7 @@ export class GroupQueue {
       state.containerName = null;
       state.groupFolder = null;
       this.activeCount--;
+      this.emitStateChange();
       this.drainGroup(groupJid);
     }
   }
@@ -237,7 +296,9 @@ export class GroupQueue {
     state.idleWaiting = false;
     state.isTaskContainer = true;
     state.runningTaskId = task.id;
+    state.startTime = Date.now();
     this.activeCount++;
+    this.emitStateChange();
 
     logger.debug(
       { groupJid, taskId: task.id, activeCount: this.activeCount },
@@ -256,6 +317,7 @@ export class GroupQueue {
       state.containerName = null;
       state.groupFolder = null;
       this.activeCount--;
+      this.emitStateChange();
       this.drainGroup(groupJid);
     }
   }

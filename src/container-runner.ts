@@ -4,6 +4,7 @@
  */
 import { ChildProcess, execFile, spawn } from 'child_process';
 import fs from 'fs';
+import net from 'net';
 import path from 'path';
 
 import {
@@ -20,19 +21,70 @@ import {
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import {
-  CONTAINER_HOST_GATEWAY,
   CONTAINER_RUNTIME_BIN,
-  hostGatewayArgs,
   isRootlessRuntime,
   readonlyMountArgs,
 } from './container-runtime.js';
 import { detectAuthMode } from './credential-proxy.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
+import { dashboardBus } from './dashboard-events.js';
 
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
+
+// ---------------------------------------------------------------------------
+// Host port proxy — allows containers to reach specific host ports via Unix
+// sockets (bridge networking blocks direct host access).
+// ---------------------------------------------------------------------------
+const PORT_SOCKETS_DIR = path.join(DATA_DIR, 'port-sockets');
+
+/** Active proxy servers keyed by port number. */
+const activePortProxies = new Map<number, net.Server>();
+
+/**
+ * Ensure a Unix socket proxy exists for the given host port.
+ * Creates one lazily if needed. Returns the socket path.
+ */
+function ensurePortProxy(port: number): string {
+  fs.mkdirSync(PORT_SOCKETS_DIR, { recursive: true });
+  const socketPath = path.join(PORT_SOCKETS_DIR, `${port}.sock`);
+
+  if (activePortProxies.has(port)) return socketPath;
+
+  // Remove stale socket file from previous runs
+  try {
+    fs.unlinkSync(socketPath);
+  } catch {
+    /* doesn't exist */
+  }
+
+  const server = net.createServer((client) => {
+    const upstream = net.createConnection({ host: '127.0.0.1', port });
+    client.pipe(upstream);
+    upstream.pipe(client);
+    client.on('error', () => upstream.destroy());
+    upstream.on('error', () => client.destroy());
+  });
+
+  server.listen(socketPath, () => {
+    // Make socket accessible to container user
+    try {
+      fs.chmodSync(socketPath, 0o777);
+    } catch {
+      /* best effort */
+    }
+    logger.debug({ port, socketPath }, 'Host port proxy started');
+  });
+
+  server.on('error', (err) => {
+    logger.error({ port, err }, 'Host port proxy error');
+  });
+
+  activePortProxies.set(port, server);
+  return socketPath;
+}
 
 export interface ContainerInput {
   prompt: string;
@@ -257,39 +309,26 @@ function buildVolumeMounts(
 function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
+  allowedHostPorts?: number[],
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
 
-  const rootless = isRootlessRuntime();
-
-  if (rootless) {
-    // Rootless Docker: containers run inside rootlesskit's network namespace
-    // and cannot reach the host's TCP ports. Use a Unix socket instead.
-    // The socket is bind-mounted into the container, and a small Node.js
-    // TCP bridge inside the container forwards traffic to it.
-    const containerSocketPath = '/tmp/credential-proxy.sock';
-    args.push(
-      '-v',
-      `${PROXY_SOCKET_PATH}:${containerSocketPath}:ro`,
-      '-e',
-      `ANTHROPIC_BASE_URL=http://127.0.0.1:${CREDENTIAL_PROXY_PORT}`,
-      '-e',
-      `CREDENTIAL_PROXY_SOCKET=${containerSocketPath}`,
-      '-e',
-      `CREDENTIAL_PROXY_PORT=${CREDENTIAL_PROXY_PORT}`,
-    );
-  } else {
-    // Non-rootless: containers can reach the host via TCP
-    args.push(
-      '-e',
-      `ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}`,
-    );
-    // Runtime-specific args for host gateway resolution
-    args.push(...hostGatewayArgs());
-  }
+  // Credential proxy: always use Unix socket (works for both rootless and
+  // bridge networking where host TCP ports are unreachable).
+  const containerSocketPath = '/tmp/credential-proxy.sock';
+  args.push(
+    '-v',
+    `${PROXY_SOCKET_PATH}:${containerSocketPath}:ro`,
+    '-e',
+    `ANTHROPIC_BASE_URL=http://127.0.0.1:${CREDENTIAL_PROXY_PORT}`,
+    '-e',
+    `CREDENTIAL_PROXY_SOCKET=${containerSocketPath}`,
+    '-e',
+    `CREDENTIAL_PROXY_PORT=${CREDENTIAL_PROXY_PORT}`,
+  );
 
   // Mirror the host's auth method with a placeholder value.
   // API key mode: SDK sends x-api-key, proxy replaces with real key.
@@ -312,9 +351,22 @@ function buildContainerArgs(
     args.push('-e', 'HOME=/home/node');
   }
 
-  // Use host networking so containers can reach host services (e.g. localhost:3000).
-  // Required for rootless Docker where port forwarding doesn't bind on the bridge.
-  args.push('--network', 'host');
+  // Bridge networking: containers get their own network namespace with internet
+  // access via NAT, but cannot reach host ports directly. Allowed host ports
+  // are bridged via Unix sockets mounted into /tmp/port-sockets/.
+  // (Default Docker network is bridge — no --network flag needed.)
+
+  if (allowedHostPorts && allowedHostPorts.length > 0) {
+    const portSocketMappings: string[] = [];
+    for (const port of allowedHostPorts) {
+      const hostSocketPath = ensurePortProxy(port);
+      const containerPortSocketPath = `/tmp/port-sockets/${port}.sock`;
+      args.push('-v', `${hostSocketPath}:${containerPortSocketPath}:ro`);
+      portSocketMappings.push(`${port}:${containerPortSocketPath}`);
+    }
+    // Tell the entrypoint which ports to bridge: "3000:/tmp/port-sockets/3000.sock,8080:/tmp/port-sockets/8080.sock"
+    args.push('-e', `NANOCLAW_HOST_PORTS=${portSocketMappings.join(',')}`);
+  }
 
   for (const mount of mounts) {
     if (mount.readonly) {
@@ -344,7 +396,11 @@ export async function runContainerAgent(
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
-  const containerArgs = buildContainerArgs(mounts, containerName);
+  const containerArgs = buildContainerArgs(
+    mounts,
+    containerName,
+    group.containerConfig?.allowedHostPorts,
+  );
 
   logger.debug(
     {
@@ -383,6 +439,27 @@ export async function runContainerAgent(
     let stderr = '';
     let stdoutTruncated = false;
     let stderrTruncated = false;
+    let currentPhase: 'initializing' | 'working' | 'responding' | 'idle' =
+      'initializing';
+
+    const emitPhase = (phase: typeof currentPhase, detail?: string) => {
+      if (phase === currentPhase && phase !== 'working') return;
+      currentPhase = phase;
+      dashboardBus.emitEvent('agent:phase', {
+        group: group.name,
+        phase,
+        detail,
+        timestamp: new Date().toISOString(),
+      });
+    };
+
+    dashboardBus.emitEvent('container:start', {
+      group: group.name,
+      groupFolder: group.folder,
+      containerName,
+      isTask: input.isScheduledTask || false,
+      timestamp: new Date().toISOString(),
+    });
 
     container.stdin.write(JSON.stringify(input));
     container.stdin.end();
@@ -454,6 +531,32 @@ export async function runContainerAgent(
         } else {
           logger.debug({ container: group.folder }, line);
         }
+
+        // Parse agent-runner phase hints from stderr
+        if (line.includes('[agent-runner]')) {
+          if (line.includes('[stream]')) {
+            // Parse structured stream entries for dashboard detail view
+            const jsonStart = line.indexOf('[stream] ') + '[stream] '.length;
+            try {
+              const entry = JSON.parse(line.slice(jsonStart));
+              dashboardBus.emitEvent('agent:stream', {
+                group: group.name,
+                entry,
+                timestamp: new Date().toISOString(),
+              });
+            } catch {
+              /* malformed stream line, skip */
+            }
+          } else if (line.includes('type=system/init')) {
+            emitPhase('initializing', 'Session initialized');
+          } else if (line.includes('type=assistant')) {
+            emitPhase('working');
+          } else if (line.includes('type=result')) {
+            emitPhase('responding');
+          } else if (line.includes('waiting for next IPC message')) {
+            emitPhase('idle');
+          }
+        }
       }
       // Don't reset timeout on stderr — SDK writes debug logs continuously.
       // Timeout only resets on actual output (OUTPUT_MARKER in stdout).
@@ -511,6 +614,14 @@ export async function runContainerAgent(
     container.on('close', (code) => {
       clearTimeout(timeout);
       const duration = Date.now() - startTime;
+
+      dashboardBus.emitEvent('container:end', {
+        group: group.name,
+        containerName,
+        duration,
+        exitCode: code,
+        timestamp: new Date().toISOString(),
+      });
 
       if (timedOut) {
         const ts = new Date().toISOString().replace(/[:.]/g, '-');

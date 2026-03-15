@@ -4,6 +4,7 @@ import path from 'path';
 import {
   ASSISTANT_NAME,
   CREDENTIAL_PROXY_PORT,
+  DASHBOARD_PORT,
   IDLE_TIMEOUT,
   POLL_INTERVAL,
   PROXY_SOCKET_PATH,
@@ -61,6 +62,8 @@ import {
   shouldDropMessage,
 } from './sender-allowlist.js';
 import { startSchedulerLoop } from './task-scheduler.js';
+import { dashboardBus } from './dashboard-events.js';
+import { startDashboardServer } from './dashboard-server.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
 import { RateLimiter } from './rate-limiter.js';
@@ -336,7 +339,13 @@ async function runAgent(
         assistantName: ASSISTANT_NAME,
       },
       (proc, containerName) =>
-        queue.registerProcess(chatJid, proc, containerName, group.folder),
+        queue.registerProcess(
+          chatJid,
+          proc,
+          containerName,
+          group.folder,
+          group.name,
+        ),
       wrappedOnOutput,
     );
 
@@ -540,11 +549,25 @@ async function main(): Promise<void> {
     socketProxyServer = await startCredentialProxySocket(PROXY_SOCKET_PATH);
   }
 
+  // Start dashboard server (opt-in via DASHBOARD_PORT env var)
+  let dashboardServer: import('http').Server | undefined;
+  if (process.env.DASHBOARD_PORT) {
+    dashboardServer = await startDashboardServer(DASHBOARD_PORT, () =>
+      queue.getState(),
+    );
+
+    // Wire queue state changes to dashboard
+    queue.onStateChange((state) => {
+      dashboardBus.emitEvent('queue:update', state);
+    });
+  }
+
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
     proxyServer.close();
     socketProxyServer?.close();
+    dashboardServer?.close();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
     process.exit(0);
@@ -625,8 +648,16 @@ async function main(): Promise<void> {
     registeredGroups: () => registeredGroups,
     getSessions: () => sessions,
     queue,
-    onProcess: (groupJid, proc, containerName, groupFolder) =>
-      queue.registerProcess(groupJid, proc, containerName, groupFolder),
+    onProcess: (groupJid, proc, containerName, groupFolder) => {
+      const group = registeredGroups[groupJid];
+      queue.registerProcess(
+        groupJid,
+        proc,
+        containerName,
+        groupFolder,
+        group?.name,
+      );
+    },
     sendMessage: async (jid, rawText) => {
       const channel = findChannel(channels, jid);
       if (!channel) {

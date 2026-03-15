@@ -117,6 +117,10 @@ function log(message: string): void {
   console.error(`[agent-runner] ${message}`);
 }
 
+function streamLog(entry: { kind: string; tool?: string; content: string }): void {
+  console.error(`[agent-runner] [stream] ${JSON.stringify(entry)}`);
+}
+
 function getSessionSummary(sessionId: string, transcriptPath: string): string | null {
   const projectDir = path.dirname(transcriptPath);
   const indexPath = path.join(projectDir, 'sessions-index.json');
@@ -442,6 +446,33 @@ async function runQuery(
       lastAssistantUuid = (message as { uuid: string }).uuid;
     }
 
+    // Stream detailed content for dashboard live view
+    if (message.type === 'assistant' && 'message' in message) {
+      const msg = message as { message: { content: Array<{ type: string; text?: string; name?: string; input?: unknown }> } };
+      for (const block of msg.message.content || []) {
+        if (block.type === 'text' && block.text) {
+          streamLog({ kind: 'text', content: block.text.slice(0, 500) });
+        } else if (block.type === 'tool_use' && block.name) {
+          const inputStr = block.input ? JSON.stringify(block.input).slice(0, 300) : '';
+          streamLog({ kind: 'tool_use', tool: block.name, content: inputStr });
+        }
+      }
+    }
+
+    if (message.type === 'user' && 'message' in message) {
+      const msg = message as { message: { content: Array<{ type: string; content?: string | Array<{ type: string; text?: string }> }> } };
+      for (const block of msg.message.content || []) {
+        if (block.type === 'tool_result' && block.content) {
+          const text = typeof block.content === 'string'
+            ? block.content
+            : (block.content as Array<{ type: string; text?: string }>).map(c => c.text || '').join('');
+          if (text) {
+            streamLog({ kind: 'tool_result', content: text.slice(0, 300) });
+          }
+        }
+      }
+    }
+
     if (message.type === 'system' && message.subtype === 'init') {
       newSessionId = message.session_id;
       log(`Session initialized: ${newSessionId}`);
@@ -456,6 +487,9 @@ async function runQuery(
       resultCount++;
       const textResult = 'result' in message ? (message as { result?: string }).result : null;
       log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`);
+      if (textResult) {
+        streamLog({ kind: 'result', content: textResult.slice(0, 500) });
+      }
       writeOutput({
         status: 'success',
         result: textResult || null,

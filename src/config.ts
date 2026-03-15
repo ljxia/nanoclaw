@@ -85,6 +85,11 @@ export const RATE_LIMIT_SENDER_MAX = parseInt(
 );
 export const RATE_LIMIT_WINDOW_MS = 60000;
 
+export const DASHBOARD_PORT = parseInt(
+  process.env.DASHBOARD_PORT || '7722',
+  10,
+);
+
 // Timezone for scheduled tasks (cron expressions, etc.)
 // Uses system timezone by default
 export const TIMEZONE =
