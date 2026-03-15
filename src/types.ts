@@ -30,6 +30,7 @@ export interface AllowedRoot {
 export interface ContainerConfig {
   additionalMounts?: AdditionalMount[];
   timeout?: number; // Default: 300000 (5 minutes)
+  allowedHostPorts?: number[]; // Ports on the host the container can reach (e.g. [3000, 8080])
 }
 
 export interface RegisteredGroup {

@@ -3,7 +3,6 @@
  * All runtime-specific logic lives here so swapping runtimes means changing one file.
  */
 import { execFileSync } from 'child_process';
-import fs from 'fs';
 import os from 'os';
 
 import { logger } from './logger.js';
@@ -24,20 +23,10 @@ export const PROXY_BIND_HOST =
   process.env.CREDENTIAL_PROXY_HOST || detectProxyBindHost();
 
 function detectProxyBindHost(): string {
-  if (os.platform() === 'darwin') return '127.0.0.1';
-
-  // WSL uses Docker Desktop (same VM routing as macOS) — loopback is correct.
-  // Check /proc filesystem, not env vars — WSL_DISTRO_NAME isn't set under systemd.
-  if (fs.existsSync('/proc/sys/fs/binfmt_misc/WSLInterop')) return '127.0.0.1';
-
-  // Bare-metal Linux: bind to the docker0 bridge IP instead of 0.0.0.0
-  const ifaces = os.networkInterfaces();
-  const docker0 = ifaces['docker0'];
-  if (docker0) {
-    const ipv4 = docker0.find((a) => a.family === 'IPv4');
-    if (ipv4) return ipv4.address;
-  }
-  return '0.0.0.0';
+  // Containers now reach the credential proxy via a bind-mounted Unix socket,
+  // so the TCP listener only serves local diagnostics. Bind to loopback only
+  // to prevent container access via LAN/bridge IPs.
+  return '127.0.0.1';
 }
 
 /** CLI args needed for the container to resolve the host gateway. */
