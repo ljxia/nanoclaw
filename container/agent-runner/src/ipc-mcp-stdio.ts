@@ -362,15 +362,18 @@ server.tool(
   'host_exec',
   `Run a shell command on the HOST machine in a mounted directory. This executes outside the container, on the actual host.
 
-IMPORTANT: Before running commands, always read the project's manifest files first (package.json, Makefile, docker-compose.yml, Justfile, etc.) to discover existing scripts and targets. Use the project's own defined commands (e.g. "npm test", "make deploy", "docker compose up -d") rather than inventing ad-hoc shell commands. The project maintainers know their build/test/deploy pipeline best.
+IMPORTANT: The cwd MUST be a container-visible path under /workspace/extra/. The host resolves it to the real host path automatically — never guess or use host paths directly.
+
+Before running commands, read the project's manifest files first (package.json, Makefile, docker-compose.yml, Justfile, etc.) to discover existing scripts and targets. Use the project's own defined commands rather than inventing ad-hoc shell commands.
 
 Output (stdout, stderr, exit code) is returned as a structured exec_result message.
 
 Example workflow:
-1. Read /workspace/extra/rolypoly/package.json to find available scripts
-2. Edit source files
-3. host_exec({ command: "npm test", cwd: "/workspace/extra/rolypoly" })
-4. host_exec({ command: "npm run deploy", cwd: "/workspace/extra/rolypoly" })
+1. ls /workspace/extra/ to discover mounted projects
+2. Read /workspace/extra/myproject/package.json to find available scripts
+3. Edit source files under /workspace/extra/myproject/
+4. host_exec({ command: "npm test", cwd: "/workspace/extra/myproject" })
+5. host_exec({ command: "docker compose up -d --build", cwd: "/workspace/extra/myproject" })
 
 Security: only directories mounted into your container via additionalMounts are allowed. Read-only mounts are rejected.`,
   {

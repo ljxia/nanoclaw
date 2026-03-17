@@ -38,6 +38,26 @@ When working as a sub-agent or teammate, only use `send_message` if instructed t
 
 Files you create are saved in `/workspace/group/`. Use this for notes, research, or anything that should persist.
 
+### Mounted directories
+
+External projects may be mounted under `/workspace/extra/`. List them with `ls /workspace/extra/` to see what's available.
+
+**All file operations and commands MUST use the container path** (`/workspace/extra/<name>/`), never the host path. You don't know and don't need to know where files live on the host — the path mapping is automatic.
+
+- Read/edit files: `Read /workspace/extra/myproject/src/index.ts`
+- Run host commands: `host_exec({ command: "docker compose up -d --build", cwd: "/workspace/extra/myproject" })`
+- Search: `Grep "pattern" /workspace/extra/myproject/src/`
+
+The `host_exec` tool translates the container path to the real host path and runs the command there. This is how you build, test, and deploy mounted projects.
+
+## GitHub Gists
+
+You are authorized to create GitHub gists via `host_exec`. Use `gh gist create` on the host. All gists MUST be private — never pass `--public`. Example:
+
+```
+host_exec({ command: "gh gist create --filename notes.md - <<'EOF'\ncontents here\nEOF", cwd: "/workspace/group" })
+```
+
 ## Memory
 
 The `conversations/` folder contains searchable history of past conversations. Use this to recall context from previous sessions.
