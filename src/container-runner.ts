@@ -15,6 +15,7 @@ import {
   DATA_DIR,
   GROUPS_DIR,
   IDLE_TIMEOUT,
+  LLAMA_SWAP_PORT,
   PROXY_SOCKET_PATH,
   TIMEZONE,
 } from './config.js';
@@ -356,17 +357,22 @@ function buildContainerArgs(
   // are bridged via Unix sockets mounted into /tmp/port-sockets/.
   // (Default Docker network is bridge — no --network flag needed.)
 
-  if (allowedHostPorts && allowedHostPorts.length > 0) {
-    const portSocketMappings: string[] = [];
-    for (const port of allowedHostPorts) {
-      const hostSocketPath = ensurePortProxy(port);
-      const containerPortSocketPath = `/tmp/port-sockets/${port}.sock`;
-      args.push('-v', `${hostSocketPath}:${containerPortSocketPath}:ro`);
-      portSocketMappings.push(`${port}:${containerPortSocketPath}`);
-    }
-    // Tell the entrypoint which ports to bridge: "3000:/tmp/port-sockets/3000.sock,8080:/tmp/port-sockets/8080.sock"
-    args.push('-e', `NANOCLAW_HOST_PORTS=${portSocketMappings.join(',')}`);
+  // Always bridge the llama-swap port so the MCP server can reach the host
+  const allPorts = new Set(allowedHostPorts || []);
+  allPorts.add(LLAMA_SWAP_PORT);
+
+  const portSocketMappings: string[] = [];
+  for (const port of allPorts) {
+    const hostSocketPath = ensurePortProxy(port);
+    const containerPortSocketPath = `/tmp/port-sockets/${port}.sock`;
+    args.push('-v', `${hostSocketPath}:${containerPortSocketPath}:ro`);
+    portSocketMappings.push(`${port}:${containerPortSocketPath}`);
   }
+  // Tell the entrypoint which ports to bridge: "3000:/tmp/port-sockets/3000.sock,8080:/tmp/port-sockets/8080.sock"
+  args.push('-e', `NANOCLAW_HOST_PORTS=${portSocketMappings.join(',')}`);
+
+  // Point llama-swap MCP server at the bridged localhost port (not host.docker.internal)
+  args.push('-e', `LLAMA_SWAP_HOST=http://localhost:${LLAMA_SWAP_PORT}`);
 
   for (const mount of mounts) {
     if (mount.readonly) {

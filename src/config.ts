@@ -90,6 +90,12 @@ export const DASHBOARD_PORT = parseInt(
   10,
 );
 
+// llama-swap local model server port (bridged into containers automatically)
+export const LLAMA_SWAP_PORT = parseInt(
+  process.env.LLAMA_SWAP_PORT || '8080',
+  10,
+);
+
 // Timezone for scheduled tasks (cron expressions, etc.)
 // Uses system timezone by default
 export const TIMEZONE =

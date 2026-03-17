@@ -9,7 +9,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 
-const LLAMA_SWAP_HOST = process.env.LLAMA_SWAP_HOST || 'http://host.docker.internal:8080';
+const LLAMA_SWAP_HOST = process.env.LLAMA_SWAP_HOST || 'http://localhost:8080';
 
 function log(msg: string): void {
   console.error(`[LLAMA-SWAP] ${msg}`);
@@ -17,16 +17,7 @@ function log(msg: string): void {
 
 async function llamaFetch(path: string, options?: RequestInit): Promise<Response> {
   const url = `${LLAMA_SWAP_HOST}${path}`;
-  try {
-    return await fetch(url, options);
-  } catch (err) {
-    // Fallback to localhost if host.docker.internal fails
-    if (LLAMA_SWAP_HOST.includes('host.docker.internal')) {
-      const fallbackUrl = url.replace('host.docker.internal', 'localhost');
-      return await fetch(fallbackUrl, options);
-    }
-    throw err;
-  }
+  return await fetch(url, options);
 }
 
 const server = new McpServer({
