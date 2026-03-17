@@ -461,7 +461,12 @@ async function startMessageLoop(): Promise<void> {
           // React with 👀 on the trigger message to acknowledge receipt
           const triggerMsg = [...groupMessages]
             .reverse()
-            .find((m) => isMainGroup || TRIGGER_PATTERN.test(m.content.trim()));
+            .find(
+              (m) =>
+                isMainGroup ||
+                group.requiresTrigger === false ||
+                TRIGGER_PATTERN.test(m.content.trim()),
+            );
           if (triggerMsg) {
             channel
               .react?.(chatJid, triggerMsg.id, '\u{1F440}')
