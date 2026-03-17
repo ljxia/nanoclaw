@@ -5,6 +5,7 @@ import path from 'path';
 import makeWASocket, {
   Browsers,
   DisconnectReason,
+  downloadContentFromMessage,
   WASocket,
   fetchLatestWaWebVersion,
   makeCacheableSignalKeyStore,
@@ -21,10 +22,12 @@ import { getLastGroupSync, setLastGroupSync, updateChatName } from '../db.js';
 import { logger } from '../logger.js';
 import {
   Channel,
+  ImageAttachment,
   OnInboundMessage,
   OnChatMetadata,
   RegisteredGroup,
 } from '../types.js';
+import { saveImage } from '../image-util.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 
 const GROUP_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -223,15 +226,66 @@ export class WhatsAppChannel implements Channel {
           // Only deliver full message for registered groups
           const groups = this.opts.registeredGroups();
           if (groups[chatJid]) {
-            const content =
+            const group = groups[chatJid];
+            let content =
               normalized.conversation ||
               normalized.extendedTextMessage?.text ||
               normalized.imageMessage?.caption ||
               normalized.videoMessage?.caption ||
               '';
 
-            // Skip protocol messages with no text content (encryption keys, read receipts, etc.)
-            if (!content) continue;
+            // Download image attachments for vision
+            const images: ImageAttachment[] = [];
+            if (normalized.imageMessage) {
+              try {
+                const stream = await downloadContentFromMessage(
+                  normalized.imageMessage,
+                  'image',
+                );
+                const chunks: Buffer[] = [];
+                for await (const chunk of stream) {
+                  chunks.push(chunk as Buffer);
+                }
+                const buffer = Buffer.concat(chunks);
+                const mimeType = normalized.imageMessage.mimetype || 'image/jpeg';
+                const ext = mimeType.includes('png') ? 'png' : mimeType.includes('webp') ? 'webp' : 'jpg';
+                const saved = await saveImage(group.folder, buffer, mimeType, `image.${ext}`);
+                if (saved) {
+                  images.push(saved);
+                  content = content ? `${content}\n[Image: ${saved.path}]` : `[Image: ${saved.path}]`;
+                }
+              } catch (err) {
+                logger.warn({ err, chatJid }, 'Failed to download WhatsApp image');
+              }
+            }
+
+            // Extract quoted message context (reply references)
+            const contextInfo =
+              normalized.extendedTextMessage?.contextInfo ||
+              normalized.imageMessage?.contextInfo ||
+              normalized.videoMessage?.contextInfo;
+            if (contextInfo?.stanzaId) {
+              const quotedText =
+                contextInfo.quotedMessage?.conversation ||
+                contextInfo.quotedMessage?.extendedTextMessage?.text ||
+                contextInfo.quotedMessage?.imageMessage?.caption ||
+                '';
+              const quotedSender = contextInfo.participant
+                ? contextInfo.participant.split('@')[0]
+                : 'unknown';
+              const maxLen = 200;
+              const truncated =
+                quotedText.length > maxLen
+                  ? quotedText.slice(0, maxLen) + '…'
+                  : quotedText;
+              const quotedPreview = truncated
+                ? `: ${truncated}`
+                : '';
+              content = `[Reply to ${quotedSender} (msg:${contextInfo.stanzaId})${quotedPreview}] ${content}`;
+            }
+
+            // Skip protocol messages with no text content and no images
+            if (!content && images.length === 0) continue;
 
             const sender = msg.key.participant || msg.key.remoteJid || '';
             const senderName = msg.pushName || sender.split('@')[0];
@@ -250,10 +304,11 @@ export class WhatsAppChannel implements Channel {
               chat_jid: chatJid,
               sender,
               sender_name: senderName,
-              content,
+              content: content || '[Image]',
               timestamp,
               is_from_me: fromMe,
               is_bot_message: isBotMessage,
+              images: images.length > 0 ? images : undefined,
             });
           }
         } catch (err) {

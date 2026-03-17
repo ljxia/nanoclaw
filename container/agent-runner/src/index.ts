@@ -47,9 +47,13 @@ interface SessionsIndex {
   entries: SessionEntry[];
 }
 
+type ContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } };
+
 interface SDKUserMessage {
   type: 'user';
-  message: { role: 'user'; content: string };
+  message: { role: 'user'; content: string | ContentBlock[] };
   parent_tool_use_id: null;
   session_id: string;
 }
@@ -57,6 +61,61 @@ interface SDKUserMessage {
 const IPC_INPUT_DIR = '/workspace/ipc/input';
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_POLL_MS = 500;
+
+// Pattern to detect image references: [Image: media/filename.ext]
+const IMAGE_REF_PATTERN = /\[Image: (media\/[^\]]+)\]/g;
+
+/**
+ * Build multimodal content blocks from text that may contain image references.
+ * Images are loaded from /workspace/group/ (the mounted group directory).
+ */
+function buildContent(text: string): string | ContentBlock[] {
+  const matches = [...text.matchAll(IMAGE_REF_PATTERN)];
+  if (matches.length === 0) return text;
+
+  const blocks: ContentBlock[] = [];
+  let lastIndex = 0;
+
+  for (const match of matches) {
+    // Add preceding text
+    const before = text.slice(lastIndex, match.index);
+    if (before.trim()) {
+      blocks.push({ type: 'text', text: before.trim() });
+    }
+
+    // Load image file
+    const relPath = match[1];
+    const absPath = path.join('/workspace/group', relPath);
+    try {
+      if (fs.existsSync(absPath)) {
+        const data = fs.readFileSync(absPath).toString('base64');
+        const ext = relPath.split('.').pop()?.toLowerCase() || 'jpg';
+        const mediaType = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
+        blocks.push({
+          type: 'image',
+          source: { type: 'base64', media_type: mediaType, data },
+        });
+        log(`Loaded image: ${relPath} (${Math.round(data.length * 3 / 4 / 1024)}KB)`);
+      } else {
+        blocks.push({ type: 'text', text: `[Image not found: ${relPath}]` });
+        log(`Image not found: ${absPath}`);
+      }
+    } catch (err) {
+      blocks.push({ type: 'text', text: `[Image load error: ${relPath}]` });
+      log(`Failed to load image ${absPath}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    lastIndex = match.index! + match[0].length;
+  }
+
+  // Add trailing text
+  const after = text.slice(lastIndex);
+  if (after.trim()) {
+    blocks.push({ type: 'text', text: after.trim() });
+  }
+
+  return blocks.length > 0 ? blocks : text;
+}
 
 /**
  * Push-based async iterable for streaming user messages to the SDK.
@@ -70,7 +129,7 @@ class MessageStream {
   push(text: string): void {
     this.queue.push({
       type: 'user',
-      message: { role: 'user', content: text },
+      message: { role: 'user', content: buildContent(text) },
       parent_tool_use_id: null,
       session_id: '',
     });

@@ -16,10 +16,12 @@ import { logger } from '../logger.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 import {
   Channel,
+  ImageAttachment,
   OnChatMetadata,
   OnInboundMessage,
   RegisteredGroup,
 } from '../types.js';
+import { saveImage } from '../image-util.js';
 
 export interface DiscordChannelOpts {
   onMessage: OnInboundMessage;
@@ -167,30 +169,59 @@ export class DiscordChannel implements Channel {
         }
       }
 
-      // Handle attachments — store placeholders so the agent knows something was sent
+      // Look up group early so we can save images to its media dir
+      const registeredGroup = this.opts.registeredGroups()[chatJid];
+
+      // Handle attachments — download images for vision, placeholder for others
+      const images: ImageAttachment[] = [];
       if (message.attachments.size > 0) {
-        const attachmentDescriptions = [...message.attachments.values()].map(
-          (att) => {
-            const contentType = att.contentType || '';
-            if (contentType.startsWith('image/')) {
-              return `[Image: ${att.name || 'image'}]`;
-            } else if (contentType.startsWith('video/')) {
-              return `[Video: ${att.name || 'video'}]`;
-            } else if (contentType.startsWith('audio/')) {
-              return `[Audio: ${att.name || 'audio'}]`;
-            } else {
-              return `[File: ${att.name || 'file'}]`;
+        const attachmentDescriptions: string[] = [];
+        for (const att of message.attachments.values()) {
+          const contentType = att.contentType || '';
+          if (contentType.startsWith('image/') && registeredGroup) {
+            try {
+              const response = await fetch(att.url);
+              if (response.ok) {
+                const buffer = Buffer.from(await response.arrayBuffer());
+                const saved = await saveImage(
+                  registeredGroup.folder,
+                  buffer,
+                  contentType,
+                  att.name || 'image.png',
+                );
+                if (saved) {
+                  images.push(saved);
+                  attachmentDescriptions.push(`[Image: ${saved.path}]`);
+                } else {
+                  attachmentDescriptions.push(`[Image: ${att.name || 'image'} (too large)]`);
+                }
+              } else {
+                attachmentDescriptions.push(`[Image: ${att.name || 'image'} (download failed)]`);
+              }
+            } catch (err) {
+              logger.warn({ err, name: att.name }, 'Failed to download Discord image');
+              attachmentDescriptions.push(`[Image: ${att.name || 'image'} (download failed)]`);
             }
-          },
-        );
-        if (content) {
-          content = `${content}\n${attachmentDescriptions.join('\n')}`;
-        } else {
-          content = attachmentDescriptions.join('\n');
+          } else if (contentType.startsWith('video/')) {
+            attachmentDescriptions.push(`[Video: ${att.name || 'video'}]`);
+          } else if (contentType.startsWith('audio/')) {
+            attachmentDescriptions.push(`[Audio: ${att.name || 'audio'}]`);
+          } else if (contentType.startsWith('image/')) {
+            attachmentDescriptions.push(`[Image: ${att.name || 'image'}]`);
+          } else {
+            attachmentDescriptions.push(`[File: ${att.name || 'file'}]`);
+          }
+        }
+        if (attachmentDescriptions.length > 0) {
+          if (content) {
+            content = `${content}\n${attachmentDescriptions.join('\n')}`;
+          } else {
+            content = attachmentDescriptions.join('\n');
+          }
         }
       }
 
-      // Handle reply context — include who the user is replying to
+      // Handle reply context — include who the user is replying to and what they said
       if (message.reference?.messageId) {
         try {
           const repliedTo = await message.channel.messages.fetch(
@@ -200,7 +231,14 @@ export class DiscordChannel implements Channel {
             repliedTo.member?.displayName ||
             repliedTo.author.displayName ||
             repliedTo.author.username;
-          content = `[Reply to ${replyAuthor}] ${content}`;
+          const quotedText = repliedTo.content || '';
+          const maxLen = 200;
+          const truncated =
+            quotedText.length > maxLen
+              ? quotedText.slice(0, maxLen) + '…'
+              : quotedText;
+          const quotedPreview = truncated ? `: ${truncated}` : '';
+          content = `[Reply to ${replyAuthor} (msg:${repliedTo.id})${quotedPreview}] ${content}`;
         } catch {
           // Referenced message may have been deleted
         }
@@ -217,8 +255,7 @@ export class DiscordChannel implements Channel {
       );
 
       // Only deliver full message for registered groups
-      const group = this.opts.registeredGroups()[chatJid];
-      if (!group) {
+      if (!registeredGroup) {
         logger.debug(
           { chatJid, chatName },
           'Message from unregistered Discord channel',
@@ -235,6 +272,7 @@ export class DiscordChannel implements Channel {
         content,
         timestamp,
         is_from_me: false,
+        images: images.length > 0 ? images : undefined,
       });
 
       logger.info(
