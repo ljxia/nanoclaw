@@ -247,15 +247,30 @@ export class WhatsAppChannel implements Channel {
                   chunks.push(chunk as Buffer);
                 }
                 const buffer = Buffer.concat(chunks);
-                const mimeType = normalized.imageMessage.mimetype || 'image/jpeg';
-                const ext = mimeType.includes('png') ? 'png' : mimeType.includes('webp') ? 'webp' : 'jpg';
-                const saved = await saveImage(group.folder, buffer, mimeType, `image.${ext}`);
+                const mimeType =
+                  normalized.imageMessage.mimetype || 'image/jpeg';
+                const ext = mimeType.includes('png')
+                  ? 'png'
+                  : mimeType.includes('webp')
+                    ? 'webp'
+                    : 'jpg';
+                const saved = await saveImage(
+                  group.folder,
+                  buffer,
+                  mimeType,
+                  `image.${ext}`,
+                );
                 if (saved) {
                   images.push(saved);
-                  content = content ? `${content}\n[Image: ${saved.path}]` : `[Image: ${saved.path}]`;
+                  content = content
+                    ? `${content}\n[Image: ${saved.path}]`
+                    : `[Image: ${saved.path}]`;
                 }
               } catch (err) {
-                logger.warn({ err, chatJid }, 'Failed to download WhatsApp image');
+                logger.warn(
+                  { err, chatJid },
+                  'Failed to download WhatsApp image',
+                );
               }
             }
 
@@ -278,9 +293,7 @@ export class WhatsAppChannel implements Channel {
                 quotedText.length > maxLen
                   ? quotedText.slice(0, maxLen) + '…'
                   : quotedText;
-              const quotedPreview = truncated
-                ? `: ${truncated}`
-                : '';
+              const quotedPreview = truncated ? `: ${truncated}` : '';
               content = `[Reply to ${quotedSender} (msg:${contextInfo.stanzaId})${quotedPreview}] ${content}`;
             }
 

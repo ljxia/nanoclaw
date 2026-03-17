@@ -193,14 +193,23 @@ export class DiscordChannel implements Channel {
                   images.push(saved);
                   attachmentDescriptions.push(`[Image: ${saved.path}]`);
                 } else {
-                  attachmentDescriptions.push(`[Image: ${att.name || 'image'} (too large)]`);
+                  attachmentDescriptions.push(
+                    `[Image: ${att.name || 'image'} (too large)]`,
+                  );
                 }
               } else {
-                attachmentDescriptions.push(`[Image: ${att.name || 'image'} (download failed)]`);
+                attachmentDescriptions.push(
+                  `[Image: ${att.name || 'image'} (download failed)]`,
+                );
               }
             } catch (err) {
-              logger.warn({ err, name: att.name }, 'Failed to download Discord image');
-              attachmentDescriptions.push(`[Image: ${att.name || 'image'} (download failed)]`);
+              logger.warn(
+                { err, name: att.name },
+                'Failed to download Discord image',
+              );
+              attachmentDescriptions.push(
+                `[Image: ${att.name || 'image'} (download failed)]`,
+              );
             }
           } else if (contentType.startsWith('video/')) {
             attachmentDescriptions.push(`[Video: ${att.name || 'video'}]`);
