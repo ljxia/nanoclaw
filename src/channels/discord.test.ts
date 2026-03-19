@@ -25,6 +25,22 @@ vi.mock('../logger.js', () => ({
   },
 }));
 
+// Mock image-util
+vi.mock('../image-util.js', () => ({
+  saveImage: vi.fn(
+    async (
+      _folder: string,
+      _buffer: Buffer,
+      _contentType: string,
+      name: string,
+    ) => ({
+      path: name,
+      mediaType: _contentType,
+      base64: '',
+    }),
+  ),
+}));
+
 // --- discord.js mock ---
 
 type Handler = (...args: any[]) => any;
@@ -101,6 +117,13 @@ vi.mock('discord.js', () => {
   };
 });
 
+// Mock global fetch for image downloads
+const mockFetch = vi.fn().mockResolvedValue({
+  ok: true,
+  arrayBuffer: () => Promise.resolve(new ArrayBuffer(8)),
+});
+vi.stubGlobal('fetch', mockFetch);
+
 import { DiscordChannel, DiscordChannelOpts } from './discord.js';
 
 // --- Test helpers ---
@@ -167,6 +190,8 @@ function createMessage(overrides: {
       name: overrides.channelName ?? 'general',
       messages: {
         fetch: vi.fn().mockResolvedValue({
+          id: 'original_msg_id',
+          content: '',
           author: { username: 'Bob', displayName: 'Bob' },
           member: { displayName: 'Bob' },
         }),
@@ -495,7 +520,14 @@ describe('DiscordChannel', () => {
       await channel.connect();
 
       const attachments = new Map([
-        ['att1', { name: 'photo.png', contentType: 'image/png' }],
+        [
+          'att1',
+          {
+            name: 'photo.png',
+            contentType: 'image/png',
+            url: 'https://cdn.example.com/photo.png',
+          },
+        ],
       ]);
       const msg = createMessage({
         content: '',
@@ -564,7 +596,14 @@ describe('DiscordChannel', () => {
       await channel.connect();
 
       const attachments = new Map([
-        ['att1', { name: 'photo.jpg', contentType: 'image/jpeg' }],
+        [
+          'att1',
+          {
+            name: 'photo.jpg',
+            contentType: 'image/jpeg',
+            url: 'https://cdn.example.com/photo.jpg',
+          },
+        ],
       ]);
       const msg = createMessage({
         content: 'Check this out',
@@ -587,7 +626,14 @@ describe('DiscordChannel', () => {
       await channel.connect();
 
       const attachments = new Map([
-        ['att1', { name: 'a.png', contentType: 'image/png' }],
+        [
+          'att1',
+          {
+            name: 'a.png',
+            contentType: 'image/png',
+            url: 'https://cdn.example.com/a.png',
+          },
+        ],
         ['att2', { name: 'b.txt', contentType: 'text/plain' }],
       ]);
       const msg = createMessage({
@@ -624,7 +670,7 @@ describe('DiscordChannel', () => {
       expect(opts.onMessage).toHaveBeenCalledWith(
         'dc:1234567890123456',
         expect.objectContaining({
-          content: '[Reply to Bob] I agree with that',
+          content: '[Reply to Bob (msg:original_msg_id)] I agree with that',
         }),
       );
     });
