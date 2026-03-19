@@ -279,6 +279,21 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     return false;
   }
 
+  // Check for new messages that arrived while the agent was processing,
+  // so the agent always addresses the user before closing.
+  const newAfterRun = getMessagesSince(
+    chatJid,
+    lastAgentTimestamp[chatJid] || '',
+    ASSISTANT_NAME,
+  );
+  if (newAfterRun.length > 0) {
+    logger.info(
+      { group: group.name, count: newAfterRun.length },
+      'New messages arrived during processing, re-queuing immediately',
+    );
+    queue.enqueueMessageCheck(chatJid);
+  }
+
   return true;
 }
 
@@ -708,6 +723,23 @@ async function main(): Promise<void> {
     },
   });
   queue.setProcessMessagesFn(processGroupMessages);
+  queue.setOnMaxRetries((groupJid: string) => {
+    const group = registeredGroups[groupJid];
+    if (!group) return;
+    const channel = findChannel(channels, groupJid);
+    if (!channel) return;
+    channel
+      .sendMessage(
+        groupJid,
+        "⚠️ I ran into repeated errors and couldn't process your message. Please try again.",
+      )
+      .catch((err) =>
+        logger.warn(
+          { groupJid, err },
+          'Failed to send max-retries error notification',
+        ),
+      );
+  });
   recoverPendingMessages();
   startMessageLoop().catch((err) => {
     logger.fatal({ err }, 'Message loop crashed unexpectedly');
