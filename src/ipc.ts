@@ -471,7 +471,8 @@ export async function processTaskIpc(
       const command = data.command as string | undefined;
       const cwd = data.cwd as string | undefined;
       const requestId = data.requestId as string | undefined;
-      const timeout = (data.timeout as number | undefined) || 300_000;
+      const DEFAULT_TIMEOUT = 600_000; // 10 min
+      const DEFAULT_MAX_OUTPUT = 200 * 1024; // 200KB per stream
 
       if (!command || !cwd || !requestId) {
         logger.warn(
@@ -512,7 +513,8 @@ export async function processTaskIpc(
         break;
       }
 
-      const MAX_OUTPUT = 50 * 1024; // 50KB per stream
+      const timeout = (data.timeout as number | undefined) || resolved.execTimeout || DEFAULT_TIMEOUT;
+      const maxOutput = resolved.execMaxOutput || DEFAULT_MAX_OUTPUT;
       const stripAnsi = (s: string) =>
         s.replace(/\x1b\[[0-9;]*[a-zA-Z]|\x1b\[[0-9;]*m/g, '');
 
@@ -533,8 +535,8 @@ export async function processTaskIpc(
         (_err, stdout, stderr) => {
           const durationMs = Date.now() - startTime;
           const exitCode = _err ? ((_err as { code?: number }).code ?? 1) : 0;
-          const cleanStdout = stripAnsi(stdout || '').slice(-MAX_OUTPUT);
-          const cleanStderr = stripAnsi(stderr || '').slice(-MAX_OUTPUT);
+          const cleanStdout = stripAnsi(stdout || '').slice(-maxOutput);
+          const cleanStderr = stripAnsi(stderr || '').slice(-maxOutput);
 
           writeIpcInput(
             sourceGroup,
@@ -836,7 +838,7 @@ function resolveHostExecPath(
   containerCwd: string,
   sourceGroup: string,
   registeredGroups: Record<string, RegisteredGroup>,
-): { hostPath: string; readonly: boolean } | null {
+): { hostPath: string; readonly: boolean; execTimeout?: number; execMaxOutput?: number } | null {
   // Find the group entry by folder
   let group: RegisteredGroup | undefined;
   let groupIsMain = false;
@@ -886,6 +888,8 @@ function resolveHostExecPath(
     return {
       hostPath,
       readonly: validation.effectiveReadonly === true,
+      execTimeout: mount.execTimeout,
+      execMaxOutput: mount.execMaxOutput,
     };
   }
 

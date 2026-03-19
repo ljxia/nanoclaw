@@ -375,11 +375,13 @@ Example workflow:
 4. host_exec({ command: "npm test", cwd: "/workspace/extra/myproject" })
 5. host_exec({ command: "docker compose up -d --build", cwd: "/workspace/extra/myproject" })
 
+Default timeout: 10 minutes (configurable per mount via execTimeout). Output cap: 200KB per stream (configurable per mount via execMaxOutput). Ports declared on mounts are auto-bridged to localhost inside the container.
+
 Security: only directories mounted into your container via additionalMounts are allowed. Read-only mounts are rejected.`,
   {
     command: z.string().describe('Shell command to run on the host'),
     cwd: z.string().describe('Container-visible path (e.g. "/workspace/extra/rolypoly")'),
-    timeout: z.number().optional().describe('Timeout in milliseconds (default: 5 minutes)'),
+    timeout: z.number().optional().describe('Timeout in milliseconds (default: 10 minutes, or per-mount execTimeout)'),
   },
   async (args) => {
     const requestId = `hexec-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;

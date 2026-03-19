@@ -2,6 +2,9 @@ export interface AdditionalMount {
   hostPath: string; // Absolute path on host (supports ~ for home)
   containerPath?: string; // Optional — defaults to basename of hostPath. Mounted at /workspace/extra/{value}
   readonly?: boolean; // Default: true for safety
+  ports?: number[]; // Auto-bridged into container (e.g. [3000, 5432])
+  execTimeout?: number; // host_exec timeout for this mount in ms (default: 600000 = 10min)
+  execMaxOutput?: number; // host_exec output cap in bytes per stream (default: 200KB)
 }
 
 /**
