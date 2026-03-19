@@ -311,8 +311,14 @@ function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
   allowedHostPorts?: number[],
+  gpus?: boolean,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
+
+  // GPU access
+  if (gpus) {
+    args.push('--gpus', 'all');
+  }
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
@@ -406,6 +412,7 @@ export async function runContainerAgent(
     mounts,
     containerName,
     group.containerConfig?.allowedHostPorts,
+    group.containerConfig?.gpus,
   );
 
   logger.debug(
