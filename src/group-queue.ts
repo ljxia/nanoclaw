@@ -45,6 +45,7 @@ export interface QueueSnapshot {
 }
 
 export class GroupQueue {
+  private onMaxRetriesFn?: (groupJid: string) => void;
   private groups = new Map<string, GroupState>();
   private activeCount = 0;
   private waitingGroups: string[] = [];
@@ -110,6 +111,10 @@ export class GroupQueue {
 
   setProcessMessagesFn(fn: (groupJid: string) => Promise<boolean>): void {
     this.processMessagesFn = fn;
+  }
+
+  setOnMaxRetries(fn: (groupJid: string) => void): void {
+    this.onMaxRetriesFn = fn;
   }
 
   enqueueMessageCheck(groupJid: string): void {
@@ -330,6 +335,7 @@ export class GroupQueue {
         'Max retries exceeded, dropping messages (will retry on next incoming message)',
       );
       state.retryCount = 0;
+      this.onMaxRetriesFn?.(groupJid);
       return;
     }
 
