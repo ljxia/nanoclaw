@@ -513,7 +513,10 @@ export async function processTaskIpc(
         break;
       }
 
-      const timeout = (data.timeout as number | undefined) || resolved.execTimeout || DEFAULT_TIMEOUT;
+      const timeout =
+        (data.timeout as number | undefined) ||
+        resolved.execTimeout ||
+        DEFAULT_TIMEOUT;
       const maxOutput = resolved.execMaxOutput || DEFAULT_MAX_OUTPUT;
       const stripAnsi = (s: string) =>
         s.replace(/\x1b\[[0-9;]*[a-zA-Z]|\x1b\[[0-9;]*m/g, '');
@@ -838,7 +841,12 @@ function resolveHostExecPath(
   containerCwd: string,
   sourceGroup: string,
   registeredGroups: Record<string, RegisteredGroup>,
-): { hostPath: string; readonly: boolean; execTimeout?: number; execMaxOutput?: number } | null {
+): {
+  hostPath: string;
+  readonly: boolean;
+  execTimeout?: number;
+  execMaxOutput?: number;
+} | null {
   // Find the group entry by folder
   let group: RegisteredGroup | undefined;
   let groupIsMain = false;

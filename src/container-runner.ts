@@ -409,8 +409,9 @@ export async function runContainerAgent(
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
   // Collect ports declared on mounts and merge with allowedHostPorts
-  const mountPorts = (group.containerConfig?.additionalMounts || [])
-    .flatMap(m => m.ports || []);
+  const mountPorts = (group.containerConfig?.additionalMounts || []).flatMap(
+    (m) => m.ports || [],
+  );
   const allHostPorts = [
     ...(group.containerConfig?.allowedHostPorts || []),
     ...mountPorts,
