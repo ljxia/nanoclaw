@@ -1,1 +1,13 @@
-{}
+{
+  "permissions": {
+    "allow": [
+      "Read(//home/sakaki/.config/nanoclaw/**)",
+      "Read(//home/sakaki/.nvm/versions/node/**)",
+      "Read(//home/sakaki/**)",
+      "Read(//opt/**)",
+      "Read(//usr/**)",
+      "Bash(source ~/.nvm/nvm.sh)",
+      "Bash(nvm use:*)"
+    ]
+  }
+}
