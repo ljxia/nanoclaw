@@ -50,13 +50,44 @@ External projects may be mounted under `/workspace/extra/`. List them with `ls /
 
 The `host_exec` tool translates the container path to the real host path and runs the command there. This is how you build, test, and deploy mounted projects.
 
-## GitHub Gists
+## Service Development Workflow
 
-You are authorized to create GitHub gists via `host_exec`. Use `gh gist create` on the host. All gists MUST be private — never pass `--public`. Example:
+When working with mounted projects that run services:
+
+1. `ls /workspace/extra/` to discover mounted projects
+2. Read project manifests (package.json, docker-compose.yml, Makefile, etc.) to understand build/deploy commands
+3. Edit code directly under `/workspace/extra/<project>/`
+4. Use `host_exec` to build and deploy: `host_exec({ command: "npm run build && npm start", cwd: "/workspace/extra/myproject" })`
+5. Verify via `curl localhost:PORT` — ports declared on mounts are auto-bridged to localhost inside the container
+6. Check logs via `host_exec` if needed: `host_exec({ command: "docker compose logs --tail 50", cwd: "/workspace/extra/myproject" })`
+
+## Sharing Reports & Content
+
+When you need to share a formatted report, document, or content that the user can view on their phone:
+
+### GitHub Gists (private by default)
+
+Use `gh gist create` via `host_exec`. Gists MUST be private unless the user explicitly asks for public sharing.
 
 ```
-host_exec({ command: "gh gist create --filename notes.md - <<'EOF'\ncontents here\nEOF", cwd: "/workspace/group" })
+# Private (default)
+host_exec({ command: "gh gist create --filename report.md - <<'EOF'\ncontents here\nEOF", cwd: "/workspace/group" })
+
+# Public (only when user explicitly requests public sharing)
+host_exec({ command: "gh gist create --public --filename report.md - <<'EOF'\ncontents here\nEOF", cwd: "/workspace/group" })
 ```
+
+### Public sharing alternatives
+
+When the user wants public sharing and gists aren't ideal (e.g. interactive content, richer formatting):
+
+- **rentry.co** — Markdown pastebin. Good for formatted reports. No auth needed.
+  ```
+  curl -s -d "content=YOUR_MARKDOWN" https://rentry.co/api/new
+  ```
+  Returns a URL and edit code. Renders markdown nicely on mobile.
+
+- **CodeSandbox** — Best for interactive content, HTML reports, or anything with code. Use their API to create a sandbox with an `index.html` file.
 
 ## Memory
 
