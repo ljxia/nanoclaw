@@ -82,6 +82,7 @@ let lastTimestamp = '';
 let sessions: Record<string, string> = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
+const lastNoOutputCursor: Record<string, string> = {};
 let messageLoopRunning = false;
 
 const channels: Channel[] = [];
@@ -283,6 +284,32 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     );
     return false;
   }
+
+  // Fix #3: agent ran successfully but produced no output (e.g. a context
+  // continuation that said nothing). Roll back cursor and requeue ONCE so
+  // the next container can actually respond. Guard against infinite loops
+  // by tracking the cursor we last rolled back to — if it's the same as
+  // now, the agent genuinely has nothing to say and we leave the cursor advanced.
+  if (!outputSentToUser) {
+    if (lastNoOutputCursor[chatJid] !== previousCursor) {
+      lastNoOutputCursor[chatJid] = previousCursor;
+      logger.info(
+        { group: group.name },
+        'Agent produced no output, rolling back cursor and re-queuing (once)',
+      );
+      lastAgentTimestamp[chatJid] = previousCursor;
+      saveState();
+      queue.enqueueMessageCheck(chatJid);
+    } else {
+      logger.info(
+        { group: group.name },
+        'Agent produced no output again for same cursor — leaving cursor advanced',
+      );
+      delete lastNoOutputCursor[chatJid];
+    }
+    return true;
+  }
+  delete lastNoOutputCursor[chatJid];
 
   // Check for new messages that arrived while the agent was processing,
   // so the agent always addresses the user before closing.
