@@ -911,7 +911,12 @@ function resolveHostExecPath(
       const rel = path.relative(mountRootHostPath, hostPath);
       if (rel.startsWith('..') || path.isAbsolute(rel)) {
         logger.warn(
-          { sourceGroup, containerCwd, mountRoot: mountRootHostPath, resolved: hostPath },
+          {
+            sourceGroup,
+            containerCwd,
+            mountRoot: mountRootHostPath,
+            resolved: hostPath,
+          },
           'host_exec rejected: cwd escapes mount root via path traversal',
         );
         return null;
