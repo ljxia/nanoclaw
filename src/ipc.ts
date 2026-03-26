@@ -526,13 +526,26 @@ export async function processTaskIpc(
         'Executing host_exec',
       );
 
+      // Shell sandbox: override cd/pushd/popd to prevent escaping the mount root.
+      // The mount root is the security boundary — commands must stay within it.
+      const escapedRoot = resolved.mountRootHostPath.replace(/'/g, "'\\''");
+      const sandboxPreamble = [
+        `__NANOCLAW_MOUNT_ROOT__='${escapedRoot}'`,
+        `__nc_check_pwd() { case "$(pwd -P)" in "$__NANOCLAW_MOUNT_ROOT__"/*|"$__NANOCLAW_MOUNT_ROOT__") ;; *) echo "host_exec: blocked — working directory escaped mount root" >&2; exit 1;; esac; }`,
+        `cd() { builtin cd "$@" && __nc_check_pwd; }`,
+        `pushd() { builtin pushd "$@" && __nc_check_pwd; }`,
+        `popd() { builtin popd "$@" && __nc_check_pwd; }`,
+        '',
+      ].join('\n');
+      const sandboxedCommand = sandboxPreamble + command;
+
       const startTime = Date.now();
       exec(
-        command,
+        sandboxedCommand,
         {
           cwd: resolved.hostPath,
           timeout,
-          shell: '/bin/sh',
+          shell: '/bin/bash',
           maxBuffer: 10 * 1024 * 1024,
         },
         (_err, stdout, stderr) => {
@@ -843,6 +856,7 @@ function resolveHostExecPath(
   registeredGroups: Record<string, RegisteredGroup>,
 ): {
   hostPath: string;
+  mountRootHostPath: string;
   readonly: boolean;
   execTimeout?: number;
   execMaxOutput?: number;
@@ -887,14 +901,26 @@ function resolveHostExecPath(
     }
 
     // If cwd is a subdirectory of the mount, append the relative portion
-    let hostPath = validation.realHostPath;
+    const mountRootHostPath = validation.realHostPath;
+    let hostPath = mountRootHostPath;
     if (containerCwd !== fullContainerPath) {
       const relative = containerCwd.slice(fullContainerPath.length + 1);
-      hostPath = path.join(hostPath, relative);
+      hostPath = path.resolve(path.join(hostPath, relative));
+
+      // Verify the resolved path hasn't escaped the mount root via '..'
+      const rel = path.relative(mountRootHostPath, hostPath);
+      if (rel.startsWith('..') || path.isAbsolute(rel)) {
+        logger.warn(
+          { sourceGroup, containerCwd, mountRoot: mountRootHostPath, resolved: hostPath },
+          'host_exec rejected: cwd escapes mount root via path traversal',
+        );
+        return null;
+      }
     }
 
     return {
       hostPath,
+      mountRootHostPath,
       readonly: validation.effectiveReadonly === true,
       execTimeout: mount.execTimeout,
       execMaxOutput: mount.execMaxOutput,
