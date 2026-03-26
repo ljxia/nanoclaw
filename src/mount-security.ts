@@ -295,7 +295,11 @@ export function validateMount(
   let effectiveReadonly = true; // Default to readonly
 
   if (requestedReadWrite) {
-    if (!isMain && allowlist.nonMainReadOnly) {
+    if (
+      !isMain &&
+      allowlist.nonMainReadOnly &&
+      !allowedRoot.allowReadWriteNonMain
+    ) {
       // Non-main groups forced to read-only
       effectiveReadonly = true;
       logger.info(
