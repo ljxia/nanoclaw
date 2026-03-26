@@ -107,3 +107,14 @@ NEVER use markdown. Only use WhatsApp/Telegram formatting:
 - ```triple backticks``` for code
 
 No ## headings. No [links](url). No **double stars**.
+
+## Proactive Status Updates
+
+Always close the loop on tasks. When you start a long-running job, acknowledge it first with `send_message`. When it finishes, *immediately* send the result — don't wait for the user to ask.
+
+Pattern:
+1. Receive request → `send_message` to acknowledge ("on it, restarting nanoclaw...")
+2. Do the work
+3. *Immediately* `send_message` the result when done ("done — nanoclaw active, change live")
+
+This applies to: builds, deployments, restarts, file edits, research, any task that takes more than a few seconds. If you've already finished and are writing your final output, that counts as the closure — just make sure it's explicit about success or failure, not just silent completion.
