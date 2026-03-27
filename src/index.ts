@@ -541,8 +541,9 @@ async function startMessageLoop(): Promise<void> {
 
           // Rate limit: per-sender for non-main groups
           if (!isMainGroup) {
+            const senderTriggerPattern = getTriggerPattern(group.trigger);
             const triggerSender = groupMessages.find((m) =>
-              TRIGGER_PATTERN.test(m.content.trim()),
+              senderTriggerPattern.test(m.content.trim()),
             )?.sender;
             if (
               triggerSender &&
@@ -557,13 +558,14 @@ async function startMessageLoop(): Promise<void> {
           }
 
           // React with 👀 on the trigger message to acknowledge receipt
+          const ackTriggerPattern = getTriggerPattern(group.trigger);
           const triggerMsg = [...groupMessages]
             .reverse()
             .find(
               (m) =>
                 isMainGroup ||
                 group.requiresTrigger === false ||
-                TRIGGER_PATTERN.test(m.content.trim()),
+                ackTriggerPattern.test(m.content.trim()),
             );
           if (triggerMsg) {
             channel
