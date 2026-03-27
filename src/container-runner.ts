@@ -11,11 +11,11 @@ import {
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
   CONTAINER_TIMEOUT,
-  CREDENTIAL_PROXY_PORT,
   DATA_DIR,
   GROUPS_DIR,
   IDLE_TIMEOUT,
   LLAMA_SWAP_PORT,
+  ONECLI_URL,
   PROXY_SOCKET_PATH,
   TIMEZONE,
 } from './config.js';
@@ -26,10 +26,12 @@ import {
   isRootlessRuntime,
   readonlyMountArgs,
 } from './container-runtime.js';
-import { detectAuthMode } from './credential-proxy.js';
+import { OneCLI } from '@onecli-sh/sdk';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 import { dashboardBus } from './dashboard-events.js';
+
+const onecli = new OneCLI({ url: ONECLI_URL });
 
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
@@ -95,6 +97,7 @@ export interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;
+  script?: string;
 }
 
 export interface ContainerOutput {
@@ -161,7 +164,7 @@ function buildVolumeMounts(
     });
 
     // Shadow .env so the agent cannot read secrets from the mounted project root.
-    // Credentials are injected by the credential proxy, never exposed to containers.
+    // Credentials are injected by the OneCLI gateway, never exposed to containers.
     const envFile = path.join(projectRoot, '.env');
     if (fs.existsSync(envFile)) {
       mounts.push({
@@ -280,7 +283,16 @@ function buildVolumeMounts(
     'agent-runner-src',
   );
   if (fs.existsSync(agentRunnerSrc)) {
-    fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
+    const srcIndex = path.join(agentRunnerSrc, 'index.ts');
+    const cachedIndex = path.join(groupAgentRunnerDir, 'index.ts');
+    const needsCopy =
+      !fs.existsSync(groupAgentRunnerDir) ||
+      !fs.existsSync(cachedIndex) ||
+      (fs.existsSync(srcIndex) &&
+        fs.statSync(srcIndex).mtimeMs > fs.statSync(cachedIndex).mtimeMs);
+    if (needsCopy) {
+      fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
+    }
   }
   ensureContainerWritable(groupAgentRunnerDir);
   mounts.push({
@@ -307,12 +319,13 @@ function buildVolumeMounts(
   return mounts;
 }
 
-function buildContainerArgs(
+async function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
   allowedHostPorts?: number[],
   gpus?: boolean,
-): string[] {
+  agentIdentifier?: string,
+): Promise<string[]> {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
   // GPU access
@@ -345,7 +358,19 @@ function buildContainerArgs(
   if (authMode === 'api-key') {
     args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
   } else {
-    args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
+    // Also try OneCLI gateway as fallback for credential injection.
+    const onecliApplied = await onecli.applyContainerConfig(args, {
+      addHostMapping: false,
+      agent: agentIdentifier,
+    });
+    if (onecliApplied) {
+      logger.info({ containerName }, 'OneCLI gateway config applied');
+    } else {
+      logger.warn(
+        { containerName },
+        'OneCLI gateway not reachable — container will have no credentials',
+      );
+    }
   }
 
   // Run as host user so bind-mounted files are accessible.
@@ -416,11 +441,16 @@ export async function runContainerAgent(
     ...(group.containerConfig?.allowedHostPorts || []),
     ...mountPorts,
   ];
-  const containerArgs = buildContainerArgs(
+  // Main group uses the default OneCLI agent; others use their own agent.
+  const agentIdentifier = input.isMain
+    ? undefined
+    : group.folder.toLowerCase().replace(/_/g, '-');
+  const containerArgs = await buildContainerArgs(
     mounts,
     containerName,
     allHostPorts.length > 0 ? allHostPorts : undefined,
     group.containerConfig?.gpus,
+    agentIdentifier,
   );
 
   logger.debug(
@@ -711,10 +741,20 @@ export async function runContainerAgent(
       const isError = code !== 0;
 
       if (isVerbose || isError) {
+        // On error, log input metadata only — not the full prompt.
+        // Full input is only included at verbose level to avoid
+        // persisting user conversation content on every non-zero exit.
+        if (isVerbose) {
+          logLines.push(`=== Input ===`, JSON.stringify(input, null, 2), ``);
+        } else {
+          logLines.push(
+            `=== Input Summary ===`,
+            `Prompt length: ${input.prompt.length} chars`,
+            `Session ID: ${input.sessionId || 'new'}`,
+            ``,
+          );
+        }
         logLines.push(
-          `=== Input ===`,
-          JSON.stringify(input, null, 2),
-          ``,
           `=== Container Args ===`,
           containerArgs.join(' '),
           ``,
@@ -857,6 +897,7 @@ export function writeTasksSnapshot(
     id: string;
     groupFolder: string;
     prompt: string;
+    script?: string | null;
     schedule_type: string;
     schedule_value: string;
     status: string;
@@ -892,7 +933,7 @@ export function writeGroupsSnapshot(
   groupFolder: string,
   isMain: boolean,
   groups: AvailableGroup[],
-  registeredJids: Set<string>,
+  _registeredJids: Set<string>,
 ): void {
   const groupIpcDir = resolveGroupIpcPath(groupFolder);
   fs.mkdirSync(groupIpcDir, { recursive: true });

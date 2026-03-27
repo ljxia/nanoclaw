@@ -12,8 +12,10 @@ vi.mock('./logger.js', () => ({
 
 // Mock child_process — store the mock fn so tests can configure it
 const mockExecFileSync = vi.fn();
+const mockExecSync = vi.fn();
 vi.mock('child_process', () => ({
   execFileSync: (...args: unknown[]) => mockExecFileSync(...args),
+  execSync: (...args: unknown[]) => mockExecSync(...args),
 }));
 
 import {
@@ -39,11 +41,10 @@ describe('readonlyMountArgs', () => {
 });
 
 describe('stopContainer', () => {
-  it('returns bin and args array for execFile', () => {
-    expect(stopContainer('nanoclaw-test-123')).toEqual({
-      bin: CONTAINER_RUNTIME_BIN,
-      args: ['stop', 'nanoclaw-test-123'],
-    });
+  it('returns stop command using CONTAINER_RUNTIME_BIN', () => {
+    expect(stopContainer('nanoclaw-test-123')).toBe(
+      `${CONTAINER_RUNTIME_BIN} stop -t 1 nanoclaw-test-123`,
+    );
   });
 });
 
@@ -90,22 +91,22 @@ describe('cleanupOrphans', () => {
       'nanoclaw-group1-111\nnanoclaw-group2-222\n',
     );
     // stop calls succeed
-    mockExecFileSync.mockReturnValue('');
+    mockExecSync.mockReturnValue('');
 
     cleanupOrphans();
 
-    // ps + 2 stop calls
-    expect(mockExecFileSync).toHaveBeenCalledTimes(3);
-    expect(mockExecFileSync).toHaveBeenNthCalledWith(
-      2,
-      CONTAINER_RUNTIME_BIN,
-      ['stop', 'nanoclaw-group1-111'],
+    // ps via execFileSync
+    expect(mockExecFileSync).toHaveBeenCalledTimes(1);
+    // 2 stop calls via execSync
+    expect(mockExecSync).toHaveBeenCalledTimes(2);
+    expect(mockExecSync).toHaveBeenNthCalledWith(
+      1,
+      `${CONTAINER_RUNTIME_BIN} stop -t 1 nanoclaw-group1-111`,
       { stdio: 'pipe' },
     );
-    expect(mockExecFileSync).toHaveBeenNthCalledWith(
-      3,
-      CONTAINER_RUNTIME_BIN,
-      ['stop', 'nanoclaw-group2-222'],
+    expect(mockExecSync).toHaveBeenNthCalledWith(
+      2,
+      `${CONTAINER_RUNTIME_BIN} stop -t 1 nanoclaw-group2-222`,
       { stdio: 'pipe' },
     );
     expect(logger.info).toHaveBeenCalledWith(
@@ -139,15 +140,16 @@ describe('cleanupOrphans', () => {
   it('continues stopping remaining containers when one stop fails', () => {
     mockExecFileSync.mockReturnValueOnce('nanoclaw-a-1\nnanoclaw-b-2\n');
     // First stop fails
-    mockExecFileSync.mockImplementationOnce(() => {
+    mockExecSync.mockImplementationOnce(() => {
       throw new Error('already stopped');
     });
     // Second stop succeeds
-    mockExecFileSync.mockReturnValueOnce('');
+    mockExecSync.mockReturnValueOnce('');
 
     cleanupOrphans(); // should not throw
 
-    expect(mockExecFileSync).toHaveBeenCalledTimes(3);
+    expect(mockExecFileSync).toHaveBeenCalledTimes(1);
+    expect(mockExecSync).toHaveBeenCalledTimes(2);
     expect(logger.info).toHaveBeenCalledWith(
       { count: 2, names: ['nanoclaw-a-1', 'nanoclaw-b-2'] },
       'Stopped orphaned containers',

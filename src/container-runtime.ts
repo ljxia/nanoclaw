@@ -2,7 +2,7 @@
  * Container runtime abstraction for NanoClaw.
  * All runtime-specific logic lives here so swapping runtimes means changing one file.
  */
-import { execFileSync } from 'child_process';
+import { execFileSync, execSync } from 'child_process';
 import os from 'os';
 
 import { logger } from './logger.js';
@@ -29,6 +29,7 @@ function detectProxyBindHost(): string {
   return '127.0.0.1';
 }
 
+
 /** CLI args needed for the container to resolve the host gateway. */
 export function hostGatewayArgs(): string[] {
   // On Linux, host.docker.internal isn't built-in — add it explicitly
@@ -46,9 +47,9 @@ export function readonlyMountArgs(
   return ['-v', `${hostPath}:${containerPath}:ro`];
 }
 
-/** Returns the bin and args to stop a container by name. */
-export function stopContainer(name: string): { bin: string; args: string[] } {
-  return { bin: CONTAINER_RUNTIME_BIN, args: ['stop', name] };
+/** Returns the shell command to stop a container by name. */
+export function stopContainer(name: string): string {
+  return `${CONTAINER_RUNTIME_BIN} stop -t 1 ${name}`;
 }
 
 /** Ensure the container runtime is running, starting it if needed. */
@@ -85,7 +86,9 @@ export function ensureContainerRuntimeRunning(): void {
     console.error(
       '╚════════════════════════════════════════════════════════════════╝\n',
     );
-    throw new Error('Container runtime is required but failed to start');
+    throw new Error('Container runtime is required but failed to start', {
+      cause: err,
+    });
   }
 }
 
@@ -121,7 +124,7 @@ export function cleanupOrphans(): void {
     const orphans = output.trim().split('\n').filter(Boolean);
     for (const name of orphans) {
       try {
-        execFileSync(CONTAINER_RUNTIME_BIN, ['stop', name], { stdio: 'pipe' });
+        execSync(stopContainer(name), { stdio: 'pipe' });
       } catch {
         /* already stopped */
       }
