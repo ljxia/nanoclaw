@@ -6,7 +6,13 @@ import { CronExpressionParser } from 'cron-parser';
 
 import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { AvailableGroup } from './container-runner.js';
-import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
+import {
+  createTask,
+  deleteTask,
+  getTaskById,
+  logTaskChange,
+  updateTask,
+} from './db.js';
 import { isValidGroupFolder, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { validateMount } from './mount-security.js';
@@ -281,8 +287,27 @@ export async function processTaskIpc(
           status: 'active',
           created_at: new Date().toISOString(),
         });
+        logTaskChange({
+          task_id: taskId,
+          action: 'created',
+          changed_by: sourceGroup,
+          new_values: {
+            schedule_type: scheduleType,
+            schedule_value: data.schedule_value,
+            context_mode: contextMode,
+            next_run: nextRun,
+          },
+        });
         logger.info(
-          { taskId, sourceGroup, targetFolder, contextMode },
+          {
+            taskId,
+            sourceGroup,
+            targetFolder,
+            contextMode,
+            scheduleType,
+            scheduleValue: data.schedule_value,
+            nextRun,
+          },
           'Task created via IPC',
         );
         deps.onTasksChanged();
@@ -294,6 +319,13 @@ export async function processTaskIpc(
         const task = getTaskById(data.taskId);
         if (task && (isMain || task.group_folder === sourceGroup)) {
           updateTask(data.taskId, { status: 'paused' });
+          logTaskChange({
+            task_id: data.taskId,
+            action: 'paused',
+            changed_by: sourceGroup,
+            old_values: { status: task.status },
+            new_values: { status: 'paused' },
+          });
           logger.info(
             { taskId: data.taskId, sourceGroup },
             'Task paused via IPC',
@@ -313,6 +345,13 @@ export async function processTaskIpc(
         const task = getTaskById(data.taskId);
         if (task && (isMain || task.group_folder === sourceGroup)) {
           updateTask(data.taskId, { status: 'active' });
+          logTaskChange({
+            task_id: data.taskId,
+            action: 'resumed',
+            changed_by: sourceGroup,
+            old_values: { status: task.status },
+            new_values: { status: 'active' },
+          });
           logger.info(
             { taskId: data.taskId, sourceGroup },
             'Task resumed via IPC',
@@ -331,6 +370,16 @@ export async function processTaskIpc(
       if (data.taskId) {
         const task = getTaskById(data.taskId);
         if (task && (isMain || task.group_folder === sourceGroup)) {
+          logTaskChange({
+            task_id: data.taskId,
+            action: 'cancelled',
+            changed_by: sourceGroup,
+            old_values: {
+              schedule_type: task.schedule_type,
+              schedule_value: task.schedule_value,
+              status: task.status,
+            },
+          });
           deleteTask(data.taskId);
           logger.info(
             { taskId: data.taskId, sourceGroup },
@@ -403,7 +452,34 @@ export async function processTaskIpc(
           }
         }
 
+        // Build old values for audit log (only fields that changed)
+        const oldValues: Record<string, unknown> = {};
+        const newValues: Record<string, unknown> = {};
+        if (updates.schedule_type !== undefined) {
+          oldValues.schedule_type = task.schedule_type;
+          newValues.schedule_type = updates.schedule_type;
+        }
+        if (updates.schedule_value !== undefined) {
+          oldValues.schedule_value = task.schedule_value;
+          newValues.schedule_value = updates.schedule_value;
+        }
+        if (updates.next_run !== undefined) {
+          oldValues.next_run = task.next_run;
+          newValues.next_run = updates.next_run;
+        }
+        if (updates.prompt !== undefined) {
+          oldValues.prompt_changed = true;
+          newValues.prompt_changed = true;
+        }
+
         updateTask(data.taskId, updates);
+        logTaskChange({
+          task_id: data.taskId,
+          action: 'updated',
+          changed_by: sourceGroup,
+          old_values: Object.keys(oldValues).length ? oldValues : undefined,
+          new_values: Object.keys(newValues).length ? newValues : undefined,
+        });
         logger.info(
           { taskId: data.taskId, sourceGroup, updates },
           'Task updated via IPC',

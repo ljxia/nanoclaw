@@ -51,6 +51,7 @@ import {
   getAllTasks,
   getMessagesSince,
   getNewMessages,
+  getRecentTaskAudit,
   getRouterState,
   initDatabase,
   setRegisteredGroup,
@@ -407,6 +408,7 @@ async function runAgent(
       status: t.status,
       next_run: t.next_run,
     })),
+    getRecentTaskAudit(),
   );
 
   // Update available groups snapshot (main group only can see all groups)
@@ -764,7 +766,10 @@ async function main(): Promise<void> {
               clearAllSessions();
               setBackend(arg);
               channel
-                .sendMessage(chatJid, `Backend switched to ${arg}. Sessions cleared.`)
+                .sendMessage(
+                  chatJid,
+                  `Backend switched to ${arg}. Sessions cleared.`,
+                )
                 .catch(() => {});
             } else if (arg) {
               channel
@@ -937,8 +942,14 @@ async function main(): Promise<void> {
         status: t.status,
         next_run: t.next_run,
       }));
+      const audit = getRecentTaskAudit();
       for (const group of Object.values(registeredGroups)) {
-        writeTasksSnapshot(group.folder, group.isMain === true, taskRows);
+        writeTasksSnapshot(
+          group.folder,
+          group.isMain === true,
+          taskRows,
+          audit,
+        );
       }
     },
   });

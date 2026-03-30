@@ -11,6 +11,7 @@ import {
 import {
   getAllTasks,
   getDueTasks,
+  getRecentTaskAudit,
   getTaskById,
   logTaskRun,
   updateTask,
@@ -160,6 +161,7 @@ async function runTask(
       status: t.status,
       next_run: t.next_run,
     })),
+    getRecentTaskAudit(),
   );
 
   let result: string | null = null;

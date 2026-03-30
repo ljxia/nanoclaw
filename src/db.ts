@@ -65,6 +65,17 @@ function createSchema(database: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_task_run_logs ON task_run_logs(task_id, run_at);
 
+    CREATE TABLE IF NOT EXISTS task_audit_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id TEXT NOT NULL,
+      action TEXT NOT NULL,
+      changed_by TEXT,
+      old_values TEXT,
+      new_values TEXT,
+      timestamp TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_audit_log ON task_audit_log(task_id, timestamp);
+
     CREATE TABLE IF NOT EXISTS router_state (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -516,6 +527,78 @@ export function logTaskRun(log: TaskRunLog): void {
     log.result,
     log.error,
   );
+}
+
+export interface TaskAuditEntry {
+  task_id: string;
+  action: 'created' | 'updated' | 'paused' | 'resumed' | 'cancelled';
+  changed_by: string;
+  old_values?: Record<string, unknown>;
+  new_values?: Record<string, unknown>;
+}
+
+export function logTaskChange(entry: TaskAuditEntry): void {
+  db.prepare(
+    `
+    INSERT INTO task_audit_log (task_id, action, changed_by, old_values, new_values, timestamp)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `,
+  ).run(
+    entry.task_id,
+    entry.action,
+    entry.changed_by,
+    entry.old_values ? JSON.stringify(entry.old_values) : null,
+    entry.new_values ? JSON.stringify(entry.new_values) : null,
+    new Date().toISOString(),
+  );
+}
+
+export function getTaskAuditLog(
+  taskId: string,
+): Array<{
+  task_id: string;
+  action: string;
+  changed_by: string;
+  old_values: string | null;
+  new_values: string | null;
+  timestamp: string;
+}> {
+  return db
+    .prepare(
+      'SELECT task_id, action, changed_by, old_values, new_values, timestamp FROM task_audit_log WHERE task_id = ? ORDER BY timestamp ASC',
+    )
+    .all(taskId) as Array<{
+    task_id: string;
+    action: string;
+    changed_by: string;
+    old_values: string | null;
+    new_values: string | null;
+    timestamp: string;
+  }>;
+}
+
+export function getRecentTaskAudit(
+  limit = 100,
+): Array<{
+  task_id: string;
+  action: string;
+  changed_by: string;
+  old_values: string | null;
+  new_values: string | null;
+  timestamp: string;
+}> {
+  return db
+    .prepare(
+      'SELECT task_id, action, changed_by, old_values, new_values, timestamp FROM task_audit_log ORDER BY timestamp DESC LIMIT ?',
+    )
+    .all(limit) as Array<{
+    task_id: string;
+    action: string;
+    changed_by: string;
+    old_values: string | null;
+    new_values: string | null;
+    timestamp: string;
+  }>;
 }
 
 // --- Router state accessors ---

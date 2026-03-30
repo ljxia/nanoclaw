@@ -248,6 +248,54 @@ server.tool(
 );
 
 server.tool(
+  'task_history',
+  'View the audit log of task changes (creates, updates, pauses, resumes, cancellations). Shows who changed what and when, with old and new values for schedule changes.',
+  {
+    task_id: z.string().optional().describe('Filter to a specific task ID. If omitted, shows all recent changes.'),
+  },
+  async (args) => {
+    const auditFile = path.join(IPC_DIR, 'task_audit_log.json');
+    try {
+      if (!fs.existsSync(auditFile)) {
+        return { content: [{ type: 'text' as const, text: 'No task change history found.' }] };
+      }
+      const entries = JSON.parse(fs.readFileSync(auditFile, 'utf-8')) as Array<{
+        task_id: string;
+        action: string;
+        changed_by: string;
+        old_values: string | null;
+        new_values: string | null;
+        timestamp: string;
+      }>;
+
+      const filtered = args.task_id
+        ? entries.filter((e) => e.task_id === args.task_id)
+        : entries;
+
+      if (filtered.length === 0) {
+        return { content: [{ type: 'text' as const, text: args.task_id ? `No history found for task ${args.task_id}.` : 'No task change history found.' }] };
+      }
+
+      const formatted = filtered.map((e) => {
+        const old_v = e.old_values ? JSON.parse(e.old_values) : null;
+        const new_v = e.new_values ? JSON.parse(e.new_values) : null;
+        let detail = '';
+        if (old_v?.schedule_value || new_v?.schedule_value) {
+          detail = ` schedule: "${old_v?.schedule_value || '?'}" → "${new_v?.schedule_value || '?'}"`;
+        }
+        return `${e.timestamp} | ${e.action} | by: ${e.changed_by}${detail}`;
+      }).join('\n');
+
+      return { content: [{ type: 'text' as const, text: `Task change history:\n${formatted}` }] };
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: `Error reading audit log: ${err instanceof Error ? err.message : String(err)}` }],
+      };
+    }
+  },
+);
+
+server.tool(
   'pause_task',
   'Pause a scheduled task. It will not run until resumed.',
   { task_id: z.string().describe('The task ID to pause') },

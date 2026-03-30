@@ -908,6 +908,14 @@ export function writeTasksSnapshot(
     status: string;
     next_run: string | null;
   }>,
+  auditLog?: Array<{
+    task_id: string;
+    action: string;
+    changed_by: string;
+    old_values: string | null;
+    new_values: string | null;
+    timestamp: string;
+  }>,
 ): void {
   // Write filtered tasks to the group's IPC directory
   const groupIpcDir = resolveGroupIpcPath(groupFolder);
@@ -920,6 +928,16 @@ export function writeTasksSnapshot(
 
   const tasksFile = path.join(groupIpcDir, 'current_tasks.json');
   fs.writeFileSync(tasksFile, JSON.stringify(filteredTasks, null, 2));
+
+  // Write audit log (recent entries only, for agent visibility)
+  if (auditLog) {
+    const taskIds = new Set(filteredTasks.map((t) => t.id));
+    const filteredAudit = isMain
+      ? auditLog
+      : auditLog.filter((e) => taskIds.has(e.task_id));
+    const auditFile = path.join(groupIpcDir, 'task_audit_log.json');
+    fs.writeFileSync(auditFile, JSON.stringify(filteredAudit, null, 2));
+  }
 }
 
 export interface AvailableGroup {
