@@ -22,6 +22,15 @@ import { logger } from './logger.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
 
 /**
+ * Minimum gap between consecutive runs of the same cron task.
+ * Prevents back-to-back execution when the cron interval is shorter
+ * than the task's runtime (e.g. a `*​/3 * * * *` cron that fires every
+ * 3 minutes but takes 30 minutes per run would otherwise re-fire
+ * immediately after each completion).
+ */
+const MIN_CRON_COOLDOWN_MS = 5 * 60_000; // 5 minutes
+
+/**
  * Compute the next run time for a recurring task, anchored to the
  * task's scheduled time rather than Date.now() to prevent cumulative
  * drift on interval-based tasks.
@@ -37,7 +46,13 @@ export function computeNextRun(task: ScheduledTask): string | null {
     const interval = CronExpressionParser.parse(task.schedule_value, {
       tz: TIMEZONE,
     });
-    return interval.next().toISOString();
+    let next = interval.next().getTime();
+    // Enforce minimum cooldown so rapid crons don't cause back-to-back runs
+    const earliest = now + MIN_CRON_COOLDOWN_MS;
+    while (next < earliest) {
+      next = interval.next().getTime();
+    }
+    return new Date(next).toISOString();
   }
 
   if (task.schedule_type === 'interval') {

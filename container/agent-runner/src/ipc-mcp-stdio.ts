@@ -11,6 +11,50 @@ import fs from 'fs';
 import path from 'path';
 import { CronExpressionParser } from 'cron-parser';
 
+/**
+ * Describe a cron expression in plain English so the agent can confirm
+ * the schedule with the user before committing.
+ */
+function describeCron(expr: string): string {
+  const parts = expr.trim().split(/\s+/);
+  if (parts.length !== 5) return `cron "${expr}"`;
+  const [minute, hour, dom, month, dow] = parts;
+
+  // Every N minutes: */N * * * *
+  if (hour === '*' && dom === '*' && month === '*' && dow === '*') {
+    if (minute.startsWith('*/')) {
+      const n = parseInt(minute.slice(2), 10);
+      return `every ${n} minute${n === 1 ? '' : 's'}`;
+    }
+    if (minute === '*') return 'every minute';
+  }
+
+  // Every N hours at :MM
+  if (dom === '*' && month === '*' && dow === '*' && hour.startsWith('*/')) {
+    const n = parseInt(hour.slice(2), 10);
+    return `every ${n} hour${n === 1 ? '' : 's'} at :${minute.padStart(2, '0')}`;
+  }
+
+  // Specific hours: 0 9 * * * → daily at 9:00
+  if (dom === '*' && month === '*' && dow === '*' && /^\d+$/.test(hour)) {
+    return `daily at ${hour}:${minute.padStart(2, '0')}`;
+  }
+
+  // Comma-separated hours: 0 6,12,18 * * *
+  if (dom === '*' && month === '*' && dow === '*' && /^[\d,]+$/.test(hour)) {
+    const hours = hour.split(',').map(h => `${h}:${minute.padStart(2, '0')}`);
+    return `daily at ${hours.join(', ')}`;
+  }
+
+  // Day-of-week: 0 9 * * 1 → Mondays at 9:00
+  if (dom === '*' && month === '*' && /^\d+$/.test(dow) && /^\d+$/.test(hour)) {
+    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    return `${days[parseInt(dow, 10)] || `day ${dow}`}s at ${hour}:${minute.padStart(2, '0')}`;
+  }
+
+  return `cron "${expr}"`;
+}
+
 const IPC_DIR = '/workspace/ipc';
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
 const TASKS_DIR = path.join(IPC_DIR, 'tasks');
@@ -84,7 +128,12 @@ MESSAGING BEHAVIOR - The task agent's output is sent to the user or group. It ca
 SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
 \u2022 cron: Standard cron expression (e.g., "*/5 * * * *" for every 5 minutes, "0 9 * * *" for daily at 9am LOCAL time)
 \u2022 interval: Milliseconds between runs (e.g., "300000" for 5 minutes, "3600000" for 1 hour)
-\u2022 once: Local time WITHOUT "Z" suffix (e.g., "2026-02-01T15:30:00"). Do NOT use UTC/Z suffix.`,
+\u2022 once: Local time WITHOUT "Z" suffix (e.g., "2026-02-01T15:30:00"). Do NOT use UTC/Z suffix.
+
+IMPORTANT \u2014 ALWAYS review and confirm the cron expression with the user BEFORE calling this tool:
+\u2022 Double-check which field (minute vs hour) you're placing values in. "Every 3 hours" is "0 */3 * * *" NOT "*/3 * * * *" (that's every 3 MINUTES).
+\u2022 State the exact cron expression AND its plain-English meaning to the user so they can catch mistakes.
+\u2022 Common pitfall: "4 times a day" \u2192 "0 0,6,12,18 * * *" (at hours 0,6,12,18), NOT "*/4 * * * *" (every 4 minutes).`,
   {
     prompt: z.string().describe('What the agent should do when the task runs. For isolated mode, include all necessary context here.'),
     schedule_type: z.enum(['cron', 'interval', 'once']).describe('cron=recurring at specific times, interval=recurring every N ms, once=run once at specific time'),
@@ -148,8 +197,14 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
 
     writeIpcFile(TASKS_DIR, data);
 
+    const desc = args.schedule_type === 'cron'
+      ? describeCron(args.schedule_value)
+      : args.schedule_type === 'interval'
+        ? `every ${Math.round(parseInt(args.schedule_value, 10) / 60000)} minutes`
+        : `once at ${args.schedule_value}`;
+
     return {
-      content: [{ type: 'text' as const, text: `Task ${taskId} scheduled: ${args.schedule_type} - ${args.schedule_value}` }],
+      content: [{ type: 'text' as const, text: `Task ${taskId} scheduled (${desc}). Cron/schedule value: "${args.schedule_value}". IMPORTANT: Tell the user the exact schedule in plain English so they can confirm it is correct.` }],
     };
   },
 );
@@ -276,7 +331,9 @@ server.tool(
 
 server.tool(
   'update_task',
-  'Update an existing scheduled task. Only provided fields are changed; omitted fields stay the same.',
+  `Update an existing scheduled task. Only provided fields are changed; omitted fields stay the same.
+
+When changing a schedule, ALWAYS review the cron expression carefully and tell the user the exact new schedule in plain English so they can verify. Double-check minute vs hour fields.`,
   {
     task_id: z.string().describe('The task ID to update'),
     prompt: z.string().optional().describe('New prompt for the task'),
@@ -322,7 +379,18 @@ server.tool(
 
     writeIpcFile(TASKS_DIR, data);
 
-    return { content: [{ type: 'text' as const, text: `Task ${args.task_id} update requested.` }] };
+    let desc = '';
+    const sv = args.schedule_value || data.schedule_value;
+    const st = args.schedule_type || data.schedule_type;
+    if (sv && st === 'cron') {
+      desc = ` New schedule: ${describeCron(sv)} (cron: "${sv}").`;
+    } else if (sv && st === 'interval') {
+      desc = ` New schedule: every ${Math.round(parseInt(sv, 10) / 60000)} minutes.`;
+    } else if (sv) {
+      desc = ` New schedule value: "${sv}".`;
+    }
+
+    return { content: [{ type: 'text' as const, text: `Task ${args.task_id} update requested.${desc} IMPORTANT: Tell the user the exact new schedule in plain English so they can confirm it is correct.` }] };
   },
 );
 
