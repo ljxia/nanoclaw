@@ -130,16 +130,18 @@ Standard Markdown works: `**bold**`, `*italic*`, `[links](url)`, `# headings`.
 
 ## Proactive Status Updates
 
-Always close the loop on tasks. When you start a long-running job, acknowledge it first with `send_message`. When it finishes, *immediately* send the result — don't wait for the user to ask.
+Always close the loop on **user-initiated** requests. When you start a long-running job triggered by a user message, acknowledge it first with `send_message`. When it finishes, *immediately* send the result — don't wait for the user to ask.
 
-Pattern:
+Pattern (user-initiated requests only):
 1. Receive request → `send_message` to acknowledge ("on it, restarting nanoclaw...")
 2. Do the work
 3. *Immediately* `send_message` the result when done ("done — nanoclaw active, change live")
 
 This applies to: builds, deployments, restarts, file edits, research, any task that takes more than a few seconds. If you've already finished and are writing your final output, that counts as the closure — just make sure it's explicit about success or failure, not just silent completion.
 
-**Exception:** If the task prompt explicitly says "no notification", "silent", or "no message", do NOT send any message — not even to explain that you are staying silent. Wrap all output in `<internal>` tags instead. The proactive-update rule does not override explicit silence instructions.
+**Scheduled tasks:** Do NOT send acknowledgement or status messages. Scheduled tasks are background jobs — only send a message if you have a meaningful result to report or an error/alert the user needs to see. Never send "starting...", "on it", or "done" for scheduled work.
+
+**Explicit silence:** If the task prompt says "no notification", "silent", or "no message", do NOT send any message — not even to explain that you are staying silent. Wrap all output in `<internal>` tags instead.
 
 ## Task Scripts
 
