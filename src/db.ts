@@ -567,9 +567,7 @@ export function logTaskChange(entry: TaskAuditEntry): void {
   );
 }
 
-export function getTaskAuditLog(
-  taskId: string,
-): Array<{
+export function getTaskAuditLog(taskId: string): Array<{
   task_id: string;
   action: string;
   changed_by: string;
@@ -591,9 +589,7 @@ export function getTaskAuditLog(
   }>;
 }
 
-export function getRecentTaskAudit(
-  limit = 100,
-): Array<{
+export function getRecentTaskAudit(limit = 100): Array<{
   task_id: string;
   action: string;
   changed_by: string;

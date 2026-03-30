@@ -416,7 +416,10 @@ export class GroupQueue {
   killAll(): void {
     for (const [jid, state] of this.groups) {
       if (state.process && !state.process.killed) {
-        logger.info({ jid, container: state.containerName }, 'Killing container');
+        logger.info(
+          { jid, container: state.containerName },
+          'Killing container',
+        );
         state.process.kill('SIGTERM');
       }
     }

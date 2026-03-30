@@ -782,7 +782,10 @@ async function main(): Promise<void> {
               clearAllSessions();
               setBackend(arg);
               channel
-                .sendMessage(chatJid, `Backend switched to ${arg}. Sessions cleared.`)
+                .sendMessage(
+                  chatJid,
+                  `Backend switched to ${arg}. Sessions cleared.`,
+                )
                 .catch(() => {});
             } else if (arg) {
               channel

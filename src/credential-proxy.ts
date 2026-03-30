@@ -94,9 +94,7 @@ function loadClaudeConfig(): BackendConfig {
  */
 function loadDynamicBackends(): void {
   // Read the raw .env file to discover BACKEND_* keys
-  const envFile = fs.existsSync('.env')
-    ? fs.readFileSync('.env', 'utf-8')
-    : '';
+  const envFile = fs.existsSync('.env') ? fs.readFileSync('.env', 'utf-8') : '';
 
   const backendNames = new Set<string>();
   const pattern = /^BACKEND_([A-Z0-9_]+)_(URL|KEY|MODEL)\s*=/gm;
@@ -196,7 +194,11 @@ class UsageTapStream extends Transform {
     this.reqPath = reqPath;
   }
 
-  _transform(chunk: Buffer, _encoding: BufferEncoding, callback: TransformCallback): void {
+  _transform(
+    chunk: Buffer,
+    _encoding: BufferEncoding,
+    callback: TransformCallback,
+  ): void {
     // Pass data through immediately — zero latency impact
     this.push(chunk);
 
@@ -291,11 +293,7 @@ function prepareBody(
   backend: BackendConfig,
   isAlternate: boolean,
 ): Buffer {
-  if (
-    !isAlternate ||
-    !backend.modelOverride ||
-    rawBody.length === 0
-  ) {
+  if (!isAlternate || !backend.modelOverride || rawBody.length === 0) {
     return rawBody;
   }
   try {
@@ -400,7 +398,9 @@ function sendToBackend(
                 to: fallback,
                 status,
                 failures,
-                reason: shouldFailoverNow ? 'rate-limited' : 'consecutive-failures',
+                reason: shouldFailoverNow
+                  ? 'rate-limited'
+                  : 'consecutive-failures',
               },
               'Failing over to next backend',
             );
