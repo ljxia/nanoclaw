@@ -66,7 +66,12 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
-import { findChannel, formatMessages, formatOutbound } from './router.js';
+import {
+  findChannel,
+  formatMessages,
+  formatOutbound,
+  isSilenceMeta,
+} from './router.js';
 import {
   restoreRemoteControl,
   startRemoteControl,
@@ -302,7 +307,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
       const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
       logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
-      if (text) {
+      if (text && !isSilenceMeta(text)) {
         await channel.sendMessage(chatJid, text);
         outputSentToUser = true;
       }

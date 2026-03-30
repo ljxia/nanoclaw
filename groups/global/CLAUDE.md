@@ -139,6 +139,8 @@ Pattern:
 
 This applies to: builds, deployments, restarts, file edits, research, any task that takes more than a few seconds. If you've already finished and are writing your final output, that counts as the closure — just make sure it's explicit about success or failure, not just silent completion.
 
+**Exception:** If the task prompt explicitly says "no notification", "silent", or "no message", do NOT send any message — not even to explain that you are staying silent. Wrap all output in `<internal>` tags instead. The proactive-update rule does not override explicit silence instructions.
+
 ## Task Scripts
 
 For any recurring task, use `schedule_task`. Frequent agent invocations — especially multiple times a day — consume API credits and can risk account restrictions. If a simple check can determine whether action is needed, add a `script` — it runs first, and the agent is only called when the check passes. This keeps invocations to a minimum.

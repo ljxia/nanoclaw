@@ -28,9 +28,19 @@ export function stripInternalTags(text: string): string {
   return text.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
 }
 
+/** Detect meta-commentary about staying silent that should not be delivered */
+const SILENCE_META_RE =
+  /^\(?(?:i'?m |staying |remaining )?(?:staying |remaining )?silent|^no (?:message|notification|response) (?:needed|required|necessary|sent)/i;
+
+export function isSilenceMeta(text: string): boolean {
+  const trimmed = text.replace(/[()]/g, '').trim();
+  return trimmed.length < 200 && SILENCE_META_RE.test(trimmed);
+}
+
 export function formatOutbound(rawText: string): string {
   const text = stripInternalTags(rawText);
   if (!text) return '';
+  if (isSilenceMeta(text)) return '';
   return text;
 }
 
