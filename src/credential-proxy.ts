@@ -3,14 +3,18 @@
  * Containers connect here instead of directly to the Anthropic API.
  * The proxy injects real credentials so containers never see them.
  *
- * Two auth modes:
+ * Supports runtime backend switching via /backend command.
+ * Backends are configured in .env with BACKEND_<NAME>_URL/KEY/MODEL.
+ * Claude is always available as the default backend.
+ *
+ * Claude auth modes:
  *   API key:  Proxy injects x-api-key on every request.
  *   OAuth:    Container CLI exchanges its placeholder token for a temp
  *             API key via /api/oauth/claude_cli/create_api_key.
  *             Proxy injects real OAuth token on that exchange request;
  *             subsequent requests carry the temp key which is valid as-is.
  */
-import { createServer, Server } from 'http';
+import { createServer, IncomingMessage, ServerResponse, Server } from 'http';
 import { request as httpsRequest } from 'https';
 import { request as httpRequest, RequestOptions } from 'http';
 import fs from 'fs';
@@ -20,14 +24,45 @@ import { logger } from './logger.js';
 
 export type AuthMode = 'api-key' | 'oauth';
 
-export interface ProxyConfig {
+// ── Backend config ─────────────────────────────────────────────────
+
+interface BackendConfig {
+  name: string;
+  upstreamUrl: URL;
+  isHttps: boolean;
   authMode: AuthMode;
+  apiKey?: string;
+  oauthToken?: string;
+  modelOverride?: string;
 }
 
-export function startCredentialProxy(
-  port: number,
-  host = '127.0.0.1',
-): Promise<Server> {
+// ── Runtime backend state ──────────────────────────────────────────
+
+let activeBackendName = 'claude';
+const backends = new Map<string, BackendConfig>();
+
+export function setBackend(name: string): boolean {
+  if (!backends.has(name)) return false;
+  activeBackendName = name;
+  logger.info({ backend: name }, 'Backend switched');
+  return true;
+}
+
+export function getBackend(): string {
+  return activeBackendName;
+}
+
+export function getAvailableBackends(): string[] {
+  return Array.from(backends.keys());
+}
+
+export function isBackendAvailable(name: string): boolean {
+  return backends.has(name);
+}
+
+// ── Credential loading ─────────────────────────────────────────────
+
+function loadClaudeConfig(): BackendConfig {
   const secrets = readEnvFile([
     'ANTHROPIC_API_KEY',
     'CLAUDE_CODE_OAUTH_TOKEN',
@@ -38,80 +73,316 @@ export function startCredentialProxy(
   const authMode: AuthMode = secrets.ANTHROPIC_API_KEY ? 'api-key' : 'oauth';
   const oauthToken =
     secrets.CLAUDE_CODE_OAUTH_TOKEN || secrets.ANTHROPIC_AUTH_TOKEN;
-
   const upstreamUrl = new URL(
     secrets.ANTHROPIC_BASE_URL || 'https://api.anthropic.com',
   );
-  const isHttps = upstreamUrl.protocol === 'https:';
-  const makeRequest = isHttps ? httpsRequest : httpRequest;
 
-  return new Promise((resolve, reject) => {
-    const server = createServer((req, res) => {
-      const chunks: Buffer[] = [];
-      req.on('data', (c) => chunks.push(c));
-      req.on('end', () => {
-        const body = Buffer.concat(chunks);
-        const headers: Record<string, string | number | string[] | undefined> =
-          {
-            ...(req.headers as Record<string, string>),
-            host: upstreamUrl.host,
-            'content-length': body.length,
-          };
+  return {
+    name: 'claude',
+    upstreamUrl,
+    isHttps: upstreamUrl.protocol === 'https:',
+    authMode,
+    apiKey: secrets.ANTHROPIC_API_KEY,
+    oauthToken,
+  };
+}
 
-        // Strip hop-by-hop headers that must not be forwarded by proxies
-        delete headers['connection'];
-        delete headers['keep-alive'];
-        delete headers['transfer-encoding'];
+/**
+ * Scan .env for BACKEND_<NAME>_URL / BACKEND_<NAME>_KEY / BACKEND_<NAME>_MODEL
+ * entries and register each as a backend.
+ */
+function loadDynamicBackends(): void {
+  // Read the raw .env file to discover BACKEND_* keys
+  const envFile = fs.existsSync('.env')
+    ? fs.readFileSync('.env', 'utf-8')
+    : '';
 
-        if (authMode === 'api-key') {
-          // API key mode: inject x-api-key on every request
-          delete headers['x-api-key'];
-          headers['x-api-key'] = secrets.ANTHROPIC_API_KEY;
-        } else {
-          // OAuth mode: replace placeholder Bearer token with the real one
-          // only when the container actually sends an Authorization header
-          // (exchange request + auth probes). Post-exchange requests use
-          // x-api-key only, so they pass through without token injection.
-          if (headers['authorization']) {
-            delete headers['authorization'];
-            if (oauthToken) {
-              headers['authorization'] = `Bearer ${oauthToken}`;
-            }
-          }
-        }
+  const backendNames = new Set<string>();
+  const pattern = /^BACKEND_([A-Z0-9_]+)_(URL|KEY|MODEL)\s*=/gm;
+  let match;
+  while ((match = pattern.exec(envFile)) !== null) {
+    backendNames.add(match[1]);
+  }
 
-        const upstream = makeRequest(
-          {
-            hostname: upstreamUrl.hostname,
-            port: upstreamUrl.port || (isHttps ? 443 : 80),
-            path: req.url,
-            method: req.method,
-            headers,
-          } as RequestOptions,
-          (upRes) => {
-            res.writeHead(upRes.statusCode!, upRes.headers);
-            upRes.pipe(res);
-          },
-        );
+  for (const rawName of backendNames) {
+    const keys = [
+      `BACKEND_${rawName}_URL`,
+      `BACKEND_${rawName}_KEY`,
+      `BACKEND_${rawName}_MODEL`,
+    ];
+    const env = readEnvFile(keys);
+    const url = process.env[keys[0]] || env[keys[0]];
+    const key = process.env[keys[1]] || env[keys[1]];
+    const model = process.env[keys[2]] || env[keys[2]];
 
-        upstream.on('error', (err) => {
-          logger.error(
-            { err, url: req.url },
-            'Credential proxy upstream error',
-          );
-          if (!res.headersSent) {
-            res.writeHead(502);
-            res.end('Bad Gateway');
-          }
-        });
+    if (!url || !key) {
+      logger.debug(
+        { backend: rawName },
+        'Backend missing URL or KEY, skipping',
+      );
+      continue;
+    }
 
-        upstream.write(body);
-        upstream.end();
-      });
+    const name = rawName.toLowerCase();
+    const upstreamUrl = new URL(url);
+
+    backends.set(name, {
+      name,
+      upstreamUrl,
+      isHttps: upstreamUrl.protocol === 'https:',
+      authMode: 'api-key',
+      apiKey: key,
+      modelOverride: model,
     });
 
+    logger.info(
+      { backend: name, url, model: model || '(default)' },
+      'Backend registered',
+    );
+  }
+}
+
+// ── Failure tracking & auto-advance ────────────────────────────────
+
+const RATE_LIMIT_CODES = new Set([429, 529]);
+const ERROR_CODES = new Set([429, 500, 502, 503, 529]);
+const MAX_CONSECUTIVE_FAILURES = 3;
+
+/** Consecutive failure count per backend. Reset on success. */
+const failureCount = new Map<string, number>();
+
+function isRateLimited(statusCode: number): boolean {
+  return RATE_LIMIT_CODES.has(statusCode);
+}
+
+function recordFailure(backendName: string): number {
+  const count = (failureCount.get(backendName) || 0) + 1;
+  failureCount.set(backendName, count);
+  return count;
+}
+
+function recordSuccess(backendName: string): void {
+  failureCount.set(backendName, 0);
+}
+
+/**
+ * Return the next backend to try after `current`, skipping backends
+ * already in the `tried` set. Returns null if all have been tried.
+ */
+function nextFallback(current: string, tried: Set<string>): string | null {
+  const names = Array.from(backends.keys());
+  // Start after current, then wrap around
+  const idx = names.indexOf(current);
+  for (let i = 1; i < names.length; i++) {
+    const candidate = names[(idx + i) % names.length];
+    if (!tried.has(candidate)) return candidate;
+  }
+  return null;
+}
+
+// ── Shared request handler ─────────────────────────────────────────
+
+function prepareBody(
+  rawBody: Buffer,
+  backend: BackendConfig,
+  isAlternate: boolean,
+): Buffer {
+  if (
+    !isAlternate ||
+    !backend.modelOverride ||
+    rawBody.length === 0
+  ) {
+    return rawBody;
+  }
+  try {
+    const json = JSON.parse(rawBody.toString());
+    if (json.model && typeof json.model === 'string') {
+      json.model = backend.modelOverride;
+      return Buffer.from(JSON.stringify(json));
+    }
+  } catch {
+    // Not valid JSON — pass through unchanged
+  }
+  return rawBody;
+}
+
+function createRequestHandler() {
+  return (req: IncomingMessage, res: ServerResponse) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => {
+      const rawBody = Buffer.concat(chunks);
+
+      // OAuth exchange and auth probe requests always go to Claude
+      const isAuthRequest = req.url?.includes('/oauth/') || false;
+      if (isAuthRequest) {
+        sendToBackend('claude', rawBody, req, res, isAuthRequest, new Set());
+        return;
+      }
+
+      sendToBackend(activeBackendName, rawBody, req, res, false, new Set());
+    });
+  };
+}
+
+function sendToBackend(
+  backendName: string,
+  rawBody: Buffer,
+  req: IncomingMessage,
+  res: ServerResponse,
+  isAuthRequest: boolean,
+  tried: Set<string>,
+): void {
+  tried.add(backendName);
+  const backend = backends.get(backendName)!;
+  const isAlternate = backendName !== 'claude' && !isAuthRequest;
+  const body = prepareBody(rawBody, backend, isAlternate);
+
+  const headers: Record<string, string | number | string[] | undefined> = {
+    ...(req.headers as Record<string, string>),
+    host: backend.upstreamUrl.host,
+    'content-length': body.length,
+  };
+
+  // Strip hop-by-hop headers
+  delete headers['connection'];
+  delete headers['keep-alive'];
+  delete headers['transfer-encoding'];
+
+  if (backend.authMode === 'api-key') {
+    delete headers['x-api-key'];
+    headers['x-api-key'] = backend.apiKey;
+  } else {
+    // OAuth mode (Claude only)
+    if (headers['authorization']) {
+      delete headers['authorization'];
+      if (backend.oauthToken) {
+        headers['authorization'] = `Bearer ${backend.oauthToken}`;
+      }
+    }
+  }
+
+  const basePath = backend.upstreamUrl.pathname.replace(/\/+$/, '');
+  const upstreamPath = basePath ? basePath + req.url : req.url;
+
+  const makeRequest = backend.isHttps ? httpsRequest : httpRequest;
+  const upstream = makeRequest(
+    {
+      hostname: backend.upstreamUrl.hostname,
+      port: backend.upstreamUrl.port || (backend.isHttps ? 443 : 80),
+      path: upstreamPath,
+      method: req.method,
+      headers,
+      family: 4, // Force IPv4
+    } as RequestOptions,
+    (upRes) => {
+      const status = upRes.statusCode!;
+      const shouldFailoverNow = isRateLimited(status);
+      const isError = ERROR_CODES.has(status);
+
+      if (isError && !isAuthRequest) {
+        const failures = recordFailure(backendName);
+
+        // Immediate failover on rate limit, or after 3 consecutive errors
+        if (shouldFailoverNow || failures >= MAX_CONSECUTIVE_FAILURES) {
+          // Drain the response body before trying next backend
+          upRes.resume();
+
+          const fallback = nextFallback(backendName, tried);
+          if (fallback) {
+            logger.warn(
+              {
+                from: backendName,
+                to: fallback,
+                status,
+                failures,
+                reason: shouldFailoverNow ? 'rate-limited' : 'consecutive-failures',
+              },
+              'Failing over to next backend',
+            );
+            activeBackendName = fallback;
+            sendToBackend(fallback, rawBody, req, res, false, tried);
+            return;
+          }
+          // All backends exhausted
+          logger.error(
+            { backend: backendName, tried: Array.from(tried) },
+            'All backends exhausted',
+          );
+        }
+      } else if (!isAuthRequest) {
+        recordSuccess(backendName);
+      }
+
+      res.writeHead(status, upRes.headers);
+      upRes.pipe(res);
+    },
+  );
+
+  upstream.on('error', (err) => {
+    logger.error(
+      { err, url: req.url, backend: backendName },
+      'Credential proxy upstream error',
+    );
+    // Try next backend on connection errors too
+    const fallback = nextFallback(backendName, tried);
+    if (fallback && !isAuthRequest) {
+      logger.warn(
+        { from: backendName, to: fallback },
+        'Connection error — failing over to next backend',
+      );
+      activeBackendName = fallback;
+      sendToBackend(fallback, rawBody, req, res, false, tried);
+      return;
+    }
+    if (!res.headersSent) {
+      res.writeHead(502);
+      res.end('Bad Gateway');
+    }
+  });
+
+  upstream.write(body);
+  upstream.end();
+}
+
+// ── Initialization ─────────────────────────────────────────────────
+
+function initBackends(): void {
+  if (backends.size > 0) return; // Already initialized
+
+  // Claude is always available
+  const claude = loadClaudeConfig();
+  backends.set('claude', claude);
+
+  // Load BACKEND_* entries from .env
+  loadDynamicBackends();
+
+  const names = getAvailableBackends();
+  if (names.length > 1) {
+    logger.info(
+      { backends: names },
+      'Multiple backends available — use /backend to switch',
+    );
+  }
+}
+
+// ── Public API ──────────────────────────────────────────────────────
+
+export function startCredentialProxy(
+  port: number,
+  host = '127.0.0.1',
+): Promise<Server> {
+  initBackends();
+  const claude = backends.get('claude')!;
+
+  return new Promise((resolve, reject) => {
+    const server = createServer(createRequestHandler());
+
     server.listen(port, host, () => {
-      logger.info({ port, host, authMode }, 'Credential proxy started');
+      logger.info(
+        { port, host, authMode: claude.authMode },
+        'Credential proxy started',
+      );
       resolve(server);
     });
 
@@ -122,7 +393,6 @@ export function startCredentialProxy(
 /**
  * Start the credential proxy on a Unix socket.
  * Used for rootless Docker where TCP-based host networking doesn't work.
- * The socket file is mounted into containers as a bind mount.
  */
 export function startCredentialProxySocket(
   socketPath: string,
@@ -134,87 +404,16 @@ export function startCredentialProxySocket(
     /* doesn't exist */
   }
 
-  const secrets = readEnvFile([
-    'ANTHROPIC_API_KEY',
-    'CLAUDE_CODE_OAUTH_TOKEN',
-    'ANTHROPIC_AUTH_TOKEN',
-    'ANTHROPIC_BASE_URL',
-  ]);
-
-  const authMode: AuthMode = secrets.ANTHROPIC_API_KEY ? 'api-key' : 'oauth';
-  const oauthToken =
-    secrets.CLAUDE_CODE_OAUTH_TOKEN || secrets.ANTHROPIC_AUTH_TOKEN;
-
-  const upstreamUrl = new URL(
-    secrets.ANTHROPIC_BASE_URL || 'https://api.anthropic.com',
-  );
-  const isHttps = upstreamUrl.protocol === 'https:';
-  const makeRequest = isHttps ? httpsRequest : httpRequest;
+  initBackends();
+  const claude = backends.get('claude')!;
 
   return new Promise((resolve, reject) => {
-    const server = createServer((req, res) => {
-      const chunks: Buffer[] = [];
-      req.on('data', (c) => chunks.push(c));
-      req.on('end', () => {
-        const body = Buffer.concat(chunks);
-        const headers: Record<string, string | number | string[] | undefined> =
-          {
-            ...(req.headers as Record<string, string>),
-            host: upstreamUrl.host,
-            'content-length': body.length,
-          };
-
-        delete headers['connection'];
-        delete headers['keep-alive'];
-        delete headers['transfer-encoding'];
-
-        if (authMode === 'api-key') {
-          delete headers['x-api-key'];
-          headers['x-api-key'] = secrets.ANTHROPIC_API_KEY;
-        } else {
-          if (headers['authorization']) {
-            delete headers['authorization'];
-            if (oauthToken) {
-              headers['authorization'] = `Bearer ${oauthToken}`;
-            }
-          }
-        }
-
-        const upstream = makeRequest(
-          {
-            hostname: upstreamUrl.hostname,
-            port: upstreamUrl.port || (isHttps ? 443 : 80),
-            path: req.url,
-            method: req.method,
-            headers,
-          } as RequestOptions,
-          (upRes) => {
-            res.writeHead(upRes.statusCode!, upRes.headers);
-            upRes.pipe(res);
-          },
-        );
-
-        upstream.on('error', (err) => {
-          logger.error(
-            { err, url: req.url },
-            'Credential proxy (socket) upstream error',
-          );
-          if (!res.headersSent) {
-            res.writeHead(502);
-            res.end('Bad Gateway');
-          }
-        });
-
-        upstream.write(body);
-        upstream.end();
-      });
-    });
+    const server = createServer(createRequestHandler());
 
     server.listen(socketPath, () => {
-      // Make socket accessible to container's non-root user
       fs.chmodSync(socketPath, 0o666);
       logger.info(
-        { socketPath, authMode },
+        { socketPath, authMode: claude.authMode },
         'Credential proxy started (Unix socket)',
       );
       resolve(server);

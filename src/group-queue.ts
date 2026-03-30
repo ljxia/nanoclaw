@@ -412,6 +412,16 @@ export class GroupQueue {
     }
   }
 
+  /** Kill all active containers immediately (e.g. on backend switch). */
+  killAll(): void {
+    for (const [jid, state] of this.groups) {
+      if (state.process && !state.process.killed) {
+        logger.info({ jid, container: state.containerName }, 'Killing container');
+        state.process.kill('SIGTERM');
+      }
+    }
+  }
+
   async shutdown(_gracePeriodMs: number): Promise<void> {
     this.shuttingDown = true;
 

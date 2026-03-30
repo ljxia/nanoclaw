@@ -22,6 +22,10 @@ import {
 import {
   startCredentialProxy,
   startCredentialProxySocket,
+  setBackend,
+  getBackend,
+  getAvailableBackends,
+  isBackendAvailable,
 } from './credential-proxy.js';
 import './channels/index.js';
 import {
@@ -51,6 +55,7 @@ import {
   initDatabase,
   setRegisteredGroup,
   setRouterState,
+  clearAllSessions,
   setSession,
   storeChatMetadata,
   storeMessage,
@@ -742,6 +747,45 @@ async function main(): Promise<void> {
         return;
       }
 
+      // Backend switch command — /backend <name> | /backend
+      if (trimmed.startsWith('/backend')) {
+        const group = registeredGroups[chatJid];
+        if (group?.isMain) {
+          const channel = findChannel(channels, chatJid);
+          if (channel) {
+            const arg = trimmed.replace('/backend', '').trim().toLowerCase();
+            const available = getAvailableBackends();
+            if (arg && isBackendAvailable(arg)) {
+              // Kill active containers and clear sessions to avoid
+              // resuming a session with thinking blocks from a different
+              // backend (causes signature validation errors).
+              queue.killAll();
+              sessions = {};
+              clearAllSessions();
+              setBackend(arg);
+              channel
+                .sendMessage(chatJid, `Backend switched to ${arg}. Sessions cleared.`)
+                .catch(() => {});
+            } else if (arg) {
+              channel
+                .sendMessage(
+                  chatJid,
+                  `Unknown backend "${arg}". Available: ${available.join(', ')}`,
+                )
+                .catch(() => {});
+            } else {
+              channel
+                .sendMessage(
+                  chatJid,
+                  `Backend: ${getBackend()}. Available: ${available.join(', ')}`,
+                )
+                .catch(() => {});
+            }
+          }
+        }
+        return;
+      }
+
       // Sender allowlist drop mode: discard messages from denied senders before storing
       if (!msg.is_from_me && !msg.is_bot_message && registeredGroups[chatJid]) {
         const cfg = loadSenderAllowlist();
@@ -773,6 +817,8 @@ async function main(): Promise<void> {
   // Create and connect all registered channels.
   // Each channel self-registers via the barrel import above.
   // Factories return null when credentials are missing, so unconfigured channels are skipped.
+  // Connections run concurrently so a slow/failing channel doesn't block others.
+  const connectPromises: Promise<void>[] = [];
   for (const channelName of getRegisteredChannelNames()) {
     const factory = getChannelFactory(channelName)!;
     const channel = factory(channelOpts);
@@ -784,12 +830,26 @@ async function main(): Promise<void> {
       continue;
     }
     channels.push(channel);
-    await channel.connect();
+    connectPromises.push(
+      channel.connect().catch((err) => {
+        logger.error(
+          { channel: channelName, err },
+          'Channel failed to connect — continuing without it',
+        );
+      }),
+    );
   }
   if (channels.length === 0) {
     logger.fatal('No channels connected');
     process.exit(1);
   }
+  // Wait up to 15s for channels to connect, then proceed regardless.
+  // Channels that connect later (e.g. WhatsApp with backoff) still work
+  // since they store messages and enqueue via callbacks once connected.
+  await Promise.race([
+    Promise.allSettled(connectPromises),
+    new Promise((resolve) => setTimeout(resolve, 15000)),
+  ]);
 
   // Initialize wallet signing oracle (optional — skips if no config)
   const walletConfig = loadWalletConfig();

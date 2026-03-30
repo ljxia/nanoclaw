@@ -368,9 +368,12 @@ async function buildContainerArgs(
     if (onecliApplied) {
       logger.info({ containerName }, 'OneCLI gateway config applied');
     } else {
-      logger.warn(
+      // OneCLI unavailable — fall back to placeholder token so the
+      // credential proxy can inject the real OAuth token on exchange.
+      args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
+      logger.info(
         { containerName },
-        'OneCLI gateway not reachable — container will have no credentials',
+        'OneCLI not reachable — using credential proxy OAuth fallback',
       );
     }
   }

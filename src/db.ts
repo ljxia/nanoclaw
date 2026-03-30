@@ -559,6 +559,10 @@ export function getAllSessions(): Record<string, string> {
   return result;
 }
 
+export function clearAllSessions(): void {
+  db.prepare('DELETE FROM sessions').run();
+}
+
 // --- Registered group accessors ---
 
 export function getRegisteredGroup(
