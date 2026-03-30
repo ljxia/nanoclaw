@@ -17,6 +17,7 @@
 import { createServer, IncomingMessage, ServerResponse, Server } from 'http';
 import { request as httpsRequest } from 'https';
 import { request as httpRequest, RequestOptions } from 'http';
+import { Transform, TransformCallback } from 'stream';
 import fs from 'fs';
 
 import { readEnvFile } from './env.js';
@@ -153,6 +154,109 @@ const failureCount = new Map<string, number>();
 
 function isRateLimited(statusCode: number): boolean {
   return RATE_LIMIT_CODES.has(statusCode);
+}
+
+// ── Token usage tracking ──────────────────────────────────────────
+
+export interface UsageEntry {
+  timestamp: string;
+  backend: string;
+  model: string | null;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  path: string;
+}
+
+/** Callback for external consumers (e.g. DB persistence). */
+let usageCallback: ((entry: UsageEntry) => void) | null = null;
+
+export function onUsage(cb: (entry: UsageEntry) => void): void {
+  usageCallback = cb;
+}
+
+/**
+ * Transform stream that passes SSE data through unchanged while
+ * extracting Anthropic usage fields from message_start and message_delta events.
+ */
+class UsageTapStream extends Transform {
+  private buffer = '';
+  private inputTokens = 0;
+  private outputTokens = 0;
+  private cacheReadTokens = 0;
+  private cacheCreationTokens = 0;
+  private model: string | null = null;
+  private backend: string;
+  private reqPath: string;
+
+  constructor(backend: string, reqPath: string) {
+    super();
+    this.backend = backend;
+    this.reqPath = reqPath;
+  }
+
+  _transform(chunk: Buffer, _encoding: BufferEncoding, callback: TransformCallback): void {
+    // Pass data through immediately — zero latency impact
+    this.push(chunk);
+
+    // Accumulate for SSE line parsing
+    this.buffer += chunk.toString();
+    this.parseEvents();
+    callback();
+  }
+
+  _flush(callback: TransformCallback): void {
+    this.parseEvents();
+    this.emit('usage_complete');
+    callback();
+  }
+
+  private parseEvents(): void {
+    // Process complete SSE lines
+    const lines = this.buffer.split('\n');
+    // Keep the last incomplete line in the buffer
+    this.buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      const jsonStr = line.slice(6).trim();
+      if (!jsonStr || jsonStr === '[DONE]') continue;
+
+      try {
+        const event = JSON.parse(jsonStr);
+
+        if (event.type === 'message_start' && event.message) {
+          if (event.message.model) this.model = event.message.model;
+          const u = event.message.usage;
+          if (u) {
+            this.inputTokens += u.input_tokens || 0;
+            this.cacheReadTokens += u.cache_read_input_tokens || 0;
+            this.cacheCreationTokens += u.cache_creation_input_tokens || 0;
+          }
+        }
+
+        if (event.type === 'message_delta' && event.usage) {
+          this.outputTokens += event.usage.output_tokens || 0;
+        }
+      } catch {
+        // Not valid JSON — skip
+      }
+    }
+  }
+
+  getUsage(): UsageEntry {
+    return {
+      timestamp: new Date().toISOString(),
+      backend: this.backend,
+      model: this.model,
+      input_tokens: this.inputTokens,
+      output_tokens: this.outputTokens,
+      cache_read_tokens: this.cacheReadTokens,
+      cache_creation_tokens: this.cacheCreationTokens,
+      path: this.reqPath,
+    };
+  }
 }
 
 function recordFailure(backendName: string): number {
@@ -315,7 +419,26 @@ function sendToBackend(
       }
 
       res.writeHead(status, upRes.headers);
-      upRes.pipe(res);
+
+      // Tap SSE streams to extract token usage without adding latency
+      const contentType = upRes.headers['content-type'] || '';
+      if (
+        usageCallback &&
+        !isAuthRequest &&
+        status === 200 &&
+        contentType.includes('text/event-stream')
+      ) {
+        const tap = new UsageTapStream(backendName, req.url || '');
+        tap.on('usage_complete', () => {
+          const usage = tap.getUsage();
+          if (usage.input_tokens > 0 || usage.output_tokens > 0) {
+            usageCallback!(usage);
+          }
+        });
+        upRes.pipe(tap).pipe(res);
+      } else {
+        upRes.pipe(res);
+      }
     },
   );
 

@@ -26,6 +26,7 @@ import {
   getBackend,
   getAvailableBackends,
   isBackendAvailable,
+  onUsage,
 } from './credential-proxy.js';
 import './channels/index.js';
 import {
@@ -54,6 +55,7 @@ import {
   getRecentTaskAudit,
   getRouterState,
   initDatabase,
+  logUsage,
   setRegisteredGroup,
   setRouterState,
   clearAllSessions,
@@ -661,6 +663,20 @@ async function main(): Promise<void> {
     socketProxyServer = await startCredentialProxySocket(PROXY_SOCKET_PATH);
   }
 
+  // Wire token usage tracking from the credential proxy to the database
+  onUsage((entry) => {
+    logUsage({
+      timestamp: entry.timestamp,
+      backend: entry.backend,
+      model: entry.model,
+      input_tokens: entry.input_tokens,
+      output_tokens: entry.output_tokens,
+      cache_read_tokens: entry.cache_read_tokens,
+      cache_creation_tokens: entry.cache_creation_tokens,
+      path: entry.path,
+    });
+  });
+
   // Start dashboard server (opt-in via DASHBOARD_PORT env var)
   let dashboardServer: import('http').Server | undefined;
   if (process.env.DASHBOARD_PORT) {
@@ -766,10 +782,7 @@ async function main(): Promise<void> {
               clearAllSessions();
               setBackend(arg);
               channel
-                .sendMessage(
-                  chatJid,
-                  `Backend switched to ${arg}. Sessions cleared.`,
-                )
+                .sendMessage(chatJid, `Backend switched to ${arg}. Sessions cleared.`)
                 .catch(() => {});
             } else if (arg) {
               channel

@@ -76,6 +76,20 @@ function createSchema(database: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_task_audit_log ON task_audit_log(task_id, timestamp);
 
+    CREATE TABLE IF NOT EXISTS usage_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp TEXT NOT NULL,
+      backend TEXT NOT NULL,
+      model TEXT,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+      path TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_usage_log_ts ON usage_log(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_usage_log_backend ON usage_log(backend, timestamp);
+
     CREATE TABLE IF NOT EXISTS router_state (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -599,6 +613,76 @@ export function getRecentTaskAudit(
     new_values: string | null;
     timestamp: string;
   }>;
+}
+
+// --- Usage log ---
+
+export interface UsageLogEntry {
+  timestamp: string;
+  backend: string;
+  model: string | null;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  path: string | null;
+}
+
+export function logUsage(entry: UsageLogEntry): void {
+  db.prepare(
+    `INSERT INTO usage_log (timestamp, backend, model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, path)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    entry.timestamp,
+    entry.backend,
+    entry.model,
+    entry.input_tokens,
+    entry.output_tokens,
+    entry.cache_read_tokens,
+    entry.cache_creation_tokens,
+    entry.path,
+  );
+}
+
+export interface UsageSummary {
+  backend: string;
+  model: string | null;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_cache_read_tokens: number;
+  total_cache_creation_tokens: number;
+  request_count: number;
+}
+
+export function getUsageSummary(
+  since?: string,
+  until?: string,
+): UsageSummary[] {
+  let sql = `
+    SELECT backend, model,
+      SUM(input_tokens) as total_input_tokens,
+      SUM(output_tokens) as total_output_tokens,
+      SUM(cache_read_tokens) as total_cache_read_tokens,
+      SUM(cache_creation_tokens) as total_cache_creation_tokens,
+      COUNT(*) as request_count
+    FROM usage_log
+  `;
+  const params: string[] = [];
+  const conditions: string[] = [];
+  if (since) {
+    conditions.push('timestamp >= ?');
+    params.push(since);
+  }
+  if (until) {
+    conditions.push('timestamp <= ?');
+    params.push(until);
+  }
+  if (conditions.length) {
+    sql += ' WHERE ' + conditions.join(' AND ');
+  }
+  sql += ' GROUP BY backend, model ORDER BY total_input_tokens DESC';
+
+  return db.prepare(sql).all(...params) as UsageSummary[];
 }
 
 // --- Router state accessors ---
