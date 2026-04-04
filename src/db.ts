@@ -425,7 +425,7 @@ export function createTask(
     task.script || null,
     task.schedule_type,
     task.schedule_value,
-    task.context_mode || 'isolated',
+    task.context_mode || 'group',
     task.next_run,
     task.status,
     task.created_at,

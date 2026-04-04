@@ -909,6 +909,10 @@ async function main(): Promise<void> {
   startSchedulerLoop({
     registeredGroups: () => registeredGroups,
     getSessions: () => sessions,
+    setSessions: (groupFolder, sessionId) => {
+      sessions[groupFolder] = sessionId;
+      setSession(groupFolder, sessionId);
+    },
     queue,
     onProcess: (groupJid, proc, containerName, groupFolder) => {
       const group = registeredGroups[groupJid];
@@ -931,9 +935,11 @@ async function main(): Promise<void> {
     },
   });
   startIpcWatcher({
-    sendMessage: (jid, text) => {
+    sendMessage: (jid, rawText) => {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
+      const text = formatOutbound(rawText);
+      if (!text) return Promise.resolve();
       return channel.sendMessage(jid, text);
     },
     registeredGroups: () => registeredGroups,

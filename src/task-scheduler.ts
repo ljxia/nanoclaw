@@ -81,6 +81,7 @@ export function computeNextRun(task: ScheduledTask): string | null {
 export interface SchedulerDependencies {
   registeredGroups: () => Record<string, RegisteredGroup>;
   getSessions: () => Record<string, string>;
+  setSessions: (groupFolder: string, sessionId: string) => void;
   queue: GroupQueue;
   onProcess: (
     groupJid: string,
@@ -202,6 +203,10 @@ async function runTask(
       (proc, containerName) =>
         deps.onProcess(task.chat_jid, proc, containerName, task.group_folder),
       async (streamedOutput: ContainerOutput) => {
+        // Save session back so group conversation stays continuous
+        if (streamedOutput.newSessionId && task.context_mode === 'group') {
+          deps.setSessions(task.group_folder, streamedOutput.newSessionId);
+        }
         if (streamedOutput.result) {
           result = streamedOutput.result;
           // Forward result to user (sendMessage handles formatting)
@@ -219,6 +224,11 @@ async function runTask(
     );
 
     if (closeTimer) clearTimeout(closeTimer);
+
+    // Save session for group-mode tasks (final output may carry it too)
+    if (output.newSessionId && task.context_mode === 'group') {
+      deps.setSessions(task.group_folder, output.newSessionId);
+    }
 
     if (output.status === 'error') {
       error = output.error || 'Unknown error';
