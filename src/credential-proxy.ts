@@ -44,8 +44,10 @@ const backends = new Map<string, BackendConfig>();
 
 export function setBackend(name: string): boolean {
   if (!backends.has(name)) return false;
+  const prev = activeBackendName;
   activeBackendName = name;
   logger.info({ backend: name }, 'Backend switched');
+  if (prev !== name) emitSwitch(prev, name, 'manual');
   return true;
 }
 
@@ -172,6 +174,38 @@ let usageCallback: ((entry: UsageEntry) => void) | null = null;
 
 export function onUsage(cb: (entry: UsageEntry) => void): void {
   usageCallback = cb;
+}
+
+export interface BackendSwitchEvent {
+  timestamp: string;
+  from: string;
+  to: string;
+  reason:
+    | 'manual'
+    | 'rate-limited'
+    | 'consecutive-failures'
+    | 'connection-error';
+}
+
+let switchCallback: ((event: BackendSwitchEvent) => void) | null = null;
+
+export function onBackendSwitch(cb: (event: BackendSwitchEvent) => void): void {
+  switchCallback = cb;
+}
+
+function emitSwitch(
+  from: string,
+  to: string,
+  reason: BackendSwitchEvent['reason'],
+): void {
+  if (switchCallback) {
+    switchCallback({
+      timestamp: new Date().toISOString(),
+      from,
+      to,
+      reason,
+    });
+  }
 }
 
 /**
@@ -405,6 +439,11 @@ function sendToBackend(
               'Failing over to next backend',
             );
             activeBackendName = fallback;
+            emitSwitch(
+              backendName,
+              fallback,
+              shouldFailoverNow ? 'rate-limited' : 'consecutive-failures',
+            );
             sendToBackend(fallback, rawBody, req, res, false, tried);
             return;
           }
@@ -455,6 +494,7 @@ function sendToBackend(
         'Connection error — failing over to next backend',
       );
       activeBackendName = fallback;
+      emitSwitch(backendName, fallback, 'connection-error');
       sendToBackend(fallback, rawBody, req, res, false, tried);
       return;
     }

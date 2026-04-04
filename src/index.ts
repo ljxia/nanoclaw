@@ -27,6 +27,7 @@ import {
   getAvailableBackends,
   isBackendAvailable,
   onUsage,
+  onBackendSwitch,
 } from './credential-proxy.js';
 import './channels/index.js';
 import {
@@ -55,6 +56,7 @@ import {
   getRecentTaskAudit,
   getRouterState,
   initDatabase,
+  logBackendSwitch,
   logUsage,
   setRegisteredGroup,
   setRouterState,
@@ -679,6 +681,16 @@ async function main(): Promise<void> {
       cache_read_tokens: entry.cache_read_tokens,
       cache_creation_tokens: entry.cache_creation_tokens,
       path: entry.path,
+    });
+  });
+
+  // Wire backend switch tracking from the credential proxy to the database
+  onBackendSwitch((event) => {
+    logBackendSwitch({
+      timestamp: event.timestamp,
+      from_backend: event.from,
+      to_backend: event.to,
+      reason: event.reason,
     });
   });
 

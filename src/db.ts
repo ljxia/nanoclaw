@@ -90,6 +90,15 @@ function createSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_usage_log_ts ON usage_log(timestamp);
     CREATE INDEX IF NOT EXISTS idx_usage_log_backend ON usage_log(backend, timestamp);
 
+    CREATE TABLE IF NOT EXISTS backend_switch_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp TEXT NOT NULL,
+      from_backend TEXT NOT NULL,
+      to_backend TEXT NOT NULL,
+      reason TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_backend_switch_ts ON backend_switch_log(timestamp);
+
     CREATE TABLE IF NOT EXISTS router_state (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -679,6 +688,50 @@ export function getUsageSummary(
   sql += ' GROUP BY backend, model ORDER BY total_input_tokens DESC';
 
   return db.prepare(sql).all(...params) as UsageSummary[];
+}
+
+// --- Backend switch log ---
+
+export interface BackendSwitchEntry {
+  timestamp: string;
+  from_backend: string;
+  to_backend: string;
+  reason:
+    | 'manual'
+    | 'rate-limited'
+    | 'consecutive-failures'
+    | 'connection-error';
+}
+
+export function logBackendSwitch(entry: BackendSwitchEntry): void {
+  db.prepare(
+    `INSERT INTO backend_switch_log (timestamp, from_backend, to_backend, reason)
+     VALUES (?, ?, ?, ?)`,
+  ).run(entry.timestamp, entry.from_backend, entry.to_backend, entry.reason);
+}
+
+export function getBackendSwitches(
+  since?: string,
+  until?: string,
+): (BackendSwitchEntry & { id: number })[] {
+  let sql = 'SELECT * FROM backend_switch_log';
+  const params: string[] = [];
+  const conditions: string[] = [];
+  if (since) {
+    conditions.push('timestamp >= ?');
+    params.push(since);
+  }
+  if (until) {
+    conditions.push('timestamp <= ?');
+    params.push(until);
+  }
+  if (conditions.length) {
+    sql += ' WHERE ' + conditions.join(' AND ');
+  }
+  sql += ' ORDER BY timestamp DESC';
+  return db.prepare(sql).all(...params) as (BackendSwitchEntry & {
+    id: number;
+  })[];
 }
 
 // --- Router state accessors ---
