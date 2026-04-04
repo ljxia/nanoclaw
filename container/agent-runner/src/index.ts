@@ -17,7 +17,7 @@
 import fs from 'fs';
 import path from 'path';
 import { execFile } from 'child_process';
-import { query, HookCallback, PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
+import { query, HookCallback, PreCompactHookInput, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
 
 interface ContainerInput {
@@ -49,16 +49,11 @@ interface SessionsIndex {
   entries: SessionEntry[];
 }
 
+type ImageMediaType = 'image/png' | 'image/webp' | 'image/jpeg' | 'image/gif';
+
 type ContentBlock =
   | { type: 'text'; text: string }
-  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } };
-
-interface SDKUserMessage {
-  type: 'user';
-  message: { role: 'user'; content: string | ContentBlock[] };
-  parent_tool_use_id: null;
-  session_id: string;
-}
+  | { type: 'image'; source: { type: 'base64'; media_type: ImageMediaType; data: string } };
 
 const IPC_INPUT_DIR = '/workspace/ipc/input';
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
@@ -92,7 +87,7 @@ function buildContent(text: string): string | ContentBlock[] {
       if (fs.existsSync(absPath)) {
         const data = fs.readFileSync(absPath).toString('base64');
         const ext = relPath.split('.').pop()?.toLowerCase() || 'jpg';
-        const mediaType = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
+        const mediaType: ImageMediaType = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
         blocks.push({
           type: 'image',
           source: { type: 'base64', media_type: mediaType, data },
@@ -133,8 +128,7 @@ class MessageStream {
       type: 'user',
       message: { role: 'user', content: buildContent(text) },
       parent_tool_use_id: null,
-      session_id: '',
-    });
+    } as SDKUserMessage);
     this.waiting?.();
   }
 
