@@ -322,18 +322,32 @@ function nextFallback(current: string, tried: Set<string>): string | null {
 
 // ── Shared request handler ─────────────────────────────────────────
 
-function prepareBody(
-  rawBody: Buffer,
-  backend: BackendConfig,
-  isAlternate: boolean,
-): Buffer {
-  if (!isAlternate || !backend.modelOverride || rawBody.length === 0) {
+/** Models known to support the `thinking` (extended thinking) parameter. */
+const THINKING_CAPABLE_MODELS = new Set([
+  'claude-sonnet-4-5-20250514',
+  'claude-sonnet-4-6-20250625',
+  'claude-opus-4-6-20250625',
+]);
+
+function modelSupportsThinking(model: string): boolean {
+  if (THINKING_CAPABLE_MODELS.has(model)) return true;
+  // Accept aliased model names (e.g. "claude-sonnet-4-5-latest")
+  if (/^claude-(sonnet-4-[5-9]|opus-4-[6-9])/.test(model)) return true;
+  return false;
+}
+
+function prepareBody(rawBody: Buffer, backend: BackendConfig): Buffer {
+  if (!backend.modelOverride || rawBody.length === 0) {
     return rawBody;
   }
   try {
     const json = JSON.parse(rawBody.toString());
     if (json.model && typeof json.model === 'string') {
       json.model = backend.modelOverride;
+      // Strip thinking parameter if the target model doesn't support it
+      if (json.thinking && !modelSupportsThinking(backend.modelOverride)) {
+        delete json.thinking;
+      }
       return Buffer.from(JSON.stringify(json));
     }
   } catch {
@@ -371,8 +385,7 @@ function sendToBackend(
 ): void {
   tried.add(backendName);
   const backend = backends.get(backendName)!;
-  const isAlternate = backendName !== 'claude' && !isAuthRequest;
-  const body = prepareBody(rawBody, backend, isAlternate);
+  const body = prepareBody(rawBody, backend);
 
   const headers: Record<string, string | number | string[] | undefined> = {
     ...(req.headers as Record<string, string>),
