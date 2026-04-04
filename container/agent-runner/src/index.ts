@@ -640,7 +640,7 @@ async function main(): Promise<void> {
   // Build initial prompt (drain any pending IPC messages too)
   let prompt = containerInput.prompt;
   if (containerInput.isScheduledTask) {
-    prompt = `[SCHEDULED TASK - The following message was sent automatically and is not coming directly from the user or group.]\n\n${prompt}`;
+    prompt = `[SCHEDULED TASK - The following message was sent automatically and is not coming directly from the user or group.]\n\nIMPORTANT: When delivering results, summarize them in plain language. Never send raw JSON, command output, or tool results directly. If you run commands or tools, wait for all results to complete and then synthesize a concise, useful summary. If there is nothing noteworthy to report, stay silent — do not send an acknowledgement or placeholder message.\n\n${prompt}`;
   }
   const pending = drainIpcInput();
   if (pending.length > 0) {
@@ -665,7 +665,7 @@ async function main(): Promise<void> {
 
     // Script says wake agent — enrich prompt with script data
     log(`Script wakeAgent=true, enriching prompt with data`);
-    prompt = `[SCHEDULED TASK]\n\nScript output:\n${JSON.stringify(scriptResult.data, null, 2)}\n\nInstructions:\n${containerInput.prompt}`;
+    prompt = `[SCHEDULED TASK]\n\nIMPORTANT: Summarize the script output below in plain language for the user. Never forward raw JSON or data structures. If nothing noteworthy changed, stay silent.\n\nScript output:\n${JSON.stringify(scriptResult.data, null, 2)}\n\nInstructions:\n${containerInput.prompt}`;
   }
 
   // Query loop: run query → wait for IPC message → run new query → repeat
